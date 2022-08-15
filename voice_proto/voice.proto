@@ -1,0 +1,46 @@
+syntax = "proto3";
+package voice;
+
+message IpDiscoveryRequest {
+    bytes uuid = 1;
+}
+
+message IpDiscoveryResponse {
+    string ip = 1;
+    uint32 port = 2;
+}
+
+message Voice {
+    uint64 sequence = 1;
+    bytes payload = 2;
+}
+
+message ServerVoice {
+    uint64 sequence = 1;
+    bytes source_id = 2;
+    bytes payload = 3;
+}
+
+message Ping {
+    uint64 seq = 1;
+    uint64 recv = 2;
+}
+
+message Pong {
+    uint64 seq = 1;
+    uint64 sent = 2;
+}
+
+message ClientMessage {
+    oneof Payload {
+        Ping ping = 1;
+        Voice voice = 2;
+    }
+}
+
+message ServerMessage {
+    oneof message {
+        Pong pong = 1;
+        ServerVoice voice = 2;
+    }
+}
