@@ -3,17 +3,13 @@ mod util;
 pub mod voice;
 
 use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 
 use futures_util::SinkExt;
-use prost::Message as _;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use server::voice::{Chatroom, ControlMessage, InitChan, VoiceConnection};
 use tokio::net::{TcpStream, UdpSocket};
-use tokio::select;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_tungstenite::WebSocketStream;
@@ -26,7 +22,7 @@ fn main() -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let tcp_addr = SocketAddr::from(([127, 0, 0, 1], 3001));
+    let tcp_addr = SocketAddr::from(([0, 0, 0, 0], 33335));
     rt.block_on(main_(tcp_addr)).map_err(|e| {
         tracing::error!("{}", e);
         e
@@ -43,26 +39,39 @@ async fn main_(tcp_addr: SocketAddr) -> anyhow::Result<()> {
         .init();
     let ctl_listener = tokio::net::TcpListener::bind(tcp_addr).await?;
     let chatroom = Chatroom::new();
+    let mut three = true;
     loop {
         let (inc, addr) = ctl_listener.accept().await?;
         tracing::debug!("accepted tcp connection from {}", addr);
         let room = chatroom.clone();
+        let port = if three {
+            three = false;
+            33333
+        } else {
+            three = true;
+            33334
+        };
         tokio::spawn(async move {
-            if let Err(e) = handle_session(inc, addr, room).await {
+            if let Err(e) = handle_session(inc, addr, room, port).await {
                 tracing::warn!("{}", e);
             }
         });
     }
 }
 
-async fn handle_session(inc: TcpStream, addr: SocketAddr, room: Chatroom) -> anyhow::Result<()> {
+async fn handle_session(
+    inc: TcpStream,
+    addr: SocketAddr,
+    room: Chatroom,
+    port: u16,
+) -> anyhow::Result<()> {
     println!("{:?}", addr);
-    let sess = ServerSession::new(inc)
+    ServerSession::new(inc)
         .await?
         .await_handshake()
         .await
         .map_err(|e| e.state)?
-        .announce_udp(room)
+        .announce_udp(room, port)
         .await
         .map_err(|e| e.error)?
         .await_client_udp()
@@ -70,7 +79,7 @@ async fn handle_session(inc: TcpStream, addr: SocketAddr, room: Chatroom) -> any
         .map_err(|e| e.error)?
         .run_session()
         .await
-        .map_err(|e| e.error);
+        .map_err(|e| e.error)?;
     Ok(())
 }
 
@@ -105,13 +114,14 @@ impl ServerSession<ClientHandshake> {
     pub async fn announce_udp(
         self,
         room: Chatroom,
+        port: u16,
     ) -> Result<ServerSession<WaitClientUdp>, SessionError> {
         tracing::debug!("announcing udp");
         let Self {
             mut ctl,
             state: ClientHandshake { user_id },
         } = self;
-        let (voice, tx) = match VoiceConnection::new(user_id.parse().unwrap(), room).await {
+        let (voice, tx) = match VoiceConnection::new(user_id.parse().unwrap(), room, port).await {
             Ok(ok) => ok,
             Err(e) => return Err(SessionError::new(ctl, e)),
         };

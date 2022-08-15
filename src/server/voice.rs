@@ -1,6 +1,5 @@
 use std::io;
 use std::net::SocketAddr;
-use std::time::{Duration, Instant, SystemTime};
 
 use prost::Message;
 use tokio::net::{ToSocketAddrs, UdpSocket};
@@ -115,8 +114,8 @@ pub struct InitMessage {
 pub enum ControlMessage {}
 
 impl VoiceConnection<Uninit> {
-    pub async fn new(id: Uuid, chatroom: Chatroom) -> anyhow::Result<(Self, InitChan)> {
-        let udp = UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], 0))).await?;
+    pub async fn new(id: Uuid, chatroom: Chatroom, port: u16) -> anyhow::Result<(Self, InitChan)> {
+        let udp = UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], port))).await?;
         let (tx, rx) = InitChan::new();
         Ok((
             VoiceConnection {
@@ -157,7 +156,7 @@ impl VoiceConnection<Uninit> {
                                 tracing::error!("{}", e);
                             }
                         }
-                        Err(e) => {
+                        Err(_) => {
                             tracing::warn!("client addr announcer dropped before sending");
                             return;
                         }

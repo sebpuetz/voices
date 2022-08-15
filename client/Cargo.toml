@@ -8,8 +8,9 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.58"
 byteorder = "1"
+clap = { version = "3.2.17", features = ["derive"] }
 cpal = "0.13.5"
-crossbeam = "0.8.2"
+crossbeam = { version = "0.8.2", features = ["crossbeam-channel"] }
 futures-util = "0.3.21"
 hound = "3.4.0"
 prost = "0.11.0"
@@ -17,6 +18,7 @@ prost-types = "0.11.0"
 rodio = "0.15.0"
 serde = { version = "1.0.140", features = ["derive"] }
 serde_json = "1.0.82"
+tokio = { version = "1.20.1", features = ["full"] }
 tracing = { version = "0.1.36", features = ["log"] }
 tracing-subscriber = { version = "0.3.15", features = ["env-filter"] }
 tungstenite = { version = "0.17.3", features = ["rustls"] }
