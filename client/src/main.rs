@@ -23,8 +23,9 @@ use crate::voice::*;
 struct Config {
     #[clap(long, default_value = "ws://localhost:33335")]
     ws_endpoint: String,
+    #[clap(long)]
+    room_id: Option<Uuid>,
 }
-
 
 fn write_input_data<T, U>(input: &[T], tx: Sender<Vec<U>>)
 where
@@ -50,9 +51,15 @@ fn main() -> anyhow::Result<()> {
     let config = Config::parse();
     let (mut stream, _) = tungstenite::connect(config.ws_endpoint)?;
     let id = Uuid::new_v4();
+    let channel_id = config.room_id.unwrap_or_else(Uuid::new_v4);
     stream.write_message(Message::Text(serde_json::to_string(&Init {
         id: id.to_string(),
     })?))?;
+
+    stream.write_message(Message::Text(serde_json::to_string(&VoiceEvent::Join {
+        channel_id,
+    })?))?;
+
     let msg = stream.read_message()?;
     let Announce { ip, port } = serde_json::from_str::<Announce>(msg.to_text()?)?;
     let slf_addr = SocketAddr::from(([0, 0, 0, 0], 0));
@@ -328,9 +335,15 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub enum Event {
     Keepalive { sent_at: u64 },
+}
+
+#[derive(Deserialize, Serialize)]
+pub enum VoiceEvent {
+    Join { channel_id: Uuid },
+    Leave,
 }
 
 #[derive(Serialize, Deserialize)]

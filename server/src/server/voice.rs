@@ -1,27 +1,57 @@
+use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
+use std::sync::{Arc, RwLock};
 
 use prost::Message;
 use tokio::net::{ToSocketAddrs, UdpSocket};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
-use crate::voice::*;
+use crate::{ports::PortRef, voice::*};
+
+#[derive(Default, Clone)]
+pub struct Channels {
+    inner: Arc<RwLock<HashMap<Uuid, Chatroom>>>,
+}
+
+impl Channels {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::default(),
+        }
+    }
+
+    pub fn get_or_create(&self, id: Uuid) -> Chatroom {
+        if let Some(room) = self.inner.read().unwrap().get(&id) {
+            return room.clone();
+        }
+        let room = Chatroom::new(id);
+        self.inner.write().unwrap().insert(id, room.clone());
+        room
+    }
+}
 
 #[derive(Clone)]
 pub struct Chatroom {
+    id: Uuid,
     tx: broadcast::Sender<(Uuid, Voice)>,
 }
 
 impl Chatroom {
-    pub fn new() -> Self {
+    pub fn new(id: Uuid) -> Self {
         Self {
+            id,
             tx: broadcast::channel(100).0,
         }
     }
 
     pub fn join(&self, id: Uuid) -> ChatRoomHandle {
         ChatRoomHandle::new(self.tx.clone(), id)
+    }
+
+    pub fn id(&self) -> Uuid {
+        self.id
     }
 }
 
@@ -51,18 +81,6 @@ impl Clone for ChatRoomHandle {
     }
 }
 
-pub struct VoiceConnection<State> {
-    chatroom: Chatroom,
-    udp: SockWrap,
-    id: Uuid,
-    state: State,
-    buf: [u8; 1500],
-}
-
-pub struct VoiceControl(mpsc::Sender<VoiceControlMsg>);
-
-pub enum VoiceControlMsg {}
-
 pub struct SockWrap(UdpSocket);
 
 impl SockWrap {
@@ -80,52 +98,68 @@ impl SockWrap {
     }
 }
 
-impl<State> VoiceConnection<State> {
+#[derive(Debug)]
+pub struct InitMessage {
+    client_addr: SocketAddr,
+}
+
+#[derive(Debug)]
+pub enum ControlMessage {
+    Init(InitMessage),
+    Stop,
+}
+
+pub struct ControlChannel(mpsc::Sender<ControlMessage>);
+
+impl ControlChannel {
+    pub async fn init(
+        &self,
+        client_udp: SocketAddr,
+    ) -> Result<(), mpsc::error::SendError<ControlMessage>> {
+        self.0
+            .send(ControlMessage::Init(InitMessage {
+                client_addr: client_udp,
+            }))
+            .await
+    }
+
+    pub async fn stop(&self) -> Result<(), mpsc::error::SendError<ControlMessage>> {
+        self.0.send(ControlMessage::Stop).await
+    }
+}
+
+pub struct VoiceConnection {
+    chatroom: Chatroom,
+    udp: SockWrap,
+    id: Uuid,
+    control_chan: mpsc::Receiver<ControlMessage>,
+    buf: [u8; 1500],
+    _port_ref: PortRef,
+}
+
+impl VoiceConnection {
     pub fn addr(&self) -> Result<SocketAddr, io::Error> {
         // FIXME: want to return outside addr here
         self.udp.0.local_addr()
     }
-}
 
-pub struct InitChan(oneshot::Sender<InitMessage>);
-
-impl InitChan {
-    fn new() -> (Self, oneshot::Receiver<InitMessage>) {
-        let (tx, rx) = oneshot::channel();
-        (InitChan(tx), rx)
-    }
-    pub fn send(self, client_addr: SocketAddr) -> anyhow::Result<mpsc::Sender<ControlMessage>> {
-        let (control_tx, control_rx) = mpsc::channel(10);
-        self.0
-            .send(InitMessage {
-                client_addr,
-                control_chan: control_rx,
-            })
-            .map_err(|_| anyhow::anyhow!("Failed to send init message"))?;
-        Ok(control_tx)
-    }
-}
-
-pub struct InitMessage {
-    client_addr: SocketAddr,
-    control_chan: mpsc::Receiver<ControlMessage>,
-}
-
-pub enum ControlMessage {}
-
-impl VoiceConnection<Uninit> {
-    pub async fn new(id: Uuid, chatroom: Chatroom, port: u16) -> anyhow::Result<(Self, InitChan)> {
-        let udp = UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], port))).await?;
-        let (tx, rx) = InitChan::new();
+    pub async fn new(
+        id: Uuid,
+        chatroom: Chatroom,
+        port: PortRef,
+    ) -> anyhow::Result<(Self, ControlChannel)> {
+        let udp = UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], port.port))).await?;
+        let (tx, rx) = mpsc::channel(10);
         Ok((
             VoiceConnection {
                 chatroom,
                 udp: SockWrap(udp),
                 id,
-                state: Uninit { remote_addr: rx },
+                control_chan: rx,
                 buf: [0; 1500],
+                _port_ref: port,
             },
-            tx,
+            ControlChannel(tx),
         ))
     }
 
@@ -148,15 +182,19 @@ impl VoiceConnection<Uninit> {
                         }
                     }
                 },
-                addr = Pin::new(&mut self.state.remote_addr) => {
+                addr = self.control_chan.recv() => {
                     match addr {
-                        Ok(init_msg) => {
+                        Some(ControlMessage::Init(init_msg)) => {
                             tracing::info!("Peering {}", init_msg.client_addr);
-                            if let Err(e) = self.peered(init_msg.client_addr, init_msg.control_chan).await {
+                            if let Err(e) = self.peered(init_msg.client_addr).await {
                                 tracing::error!("{}", e);
                             }
-                        }
-                        Err(_) => {
+                        },
+                        Some(ControlMessage::Stop) => {
+                            tracing::info!("received stop signal");
+                            return;
+                        },
+                        None => {
                             tracing::warn!("client addr announcer dropped before sending");
                             return;
                         }
@@ -167,11 +205,7 @@ impl VoiceConnection<Uninit> {
         }
     }
 
-    async fn peered(
-        mut self,
-        addr: SocketAddr,
-        mut control_rcv: mpsc::Receiver<ControlMessage>,
-    ) -> anyhow::Result<()> {
+    async fn peered(mut self, addr: SocketAddr) -> anyhow::Result<()> {
         self.udp.0.connect(addr).await?;
         tracing::info!("successfully peered with {addr}");
         let ChatRoomHandle { mut rx, tx, id } = self.chatroom.join(self.id);
@@ -200,7 +234,7 @@ impl VoiceConnection<Uninit> {
                 recv = rx.recv() => {
                     match recv {
                         Ok((pkt_id, voice)) => {
-                            tracing::debug!("{} {}", id, pkt_id);
+                            tracing::trace!("{} {}", id, pkt_id);
                             if id == pkt_id {
                                 continue;
                             }
@@ -218,8 +252,8 @@ impl VoiceConnection<Uninit> {
                         },
                     }
                 }
-                ctl = control_rcv.recv() => {
-                    if ctl.is_none() {
+                ctl = self.control_chan.recv() => {
+                    if matches!(ctl, None | Some(ControlMessage::Stop)) {
                         tracing::info!("stop reading from udp");
                         return Ok(())
                     }
@@ -253,12 +287,6 @@ impl VoiceConnection<Uninit> {
         Ok(())
     }
 }
-
-pub struct Uninit {
-    remote_addr: oneshot::Receiver<InitMessage>,
-}
-
-pub struct Peered {}
 
 pub struct DiscoverRequest {}
 
