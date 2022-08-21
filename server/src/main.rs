@@ -7,10 +7,11 @@ use std::net::SocketAddr;
 
 use ports::Ports;
 use server::session::ServerSession;
-use server::voice::Channels;
 use tokio::net::TcpStream;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::util::SubscriberInitExt;
+
+use crate::server::channel::Channels;
 
 fn main() -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -50,7 +51,7 @@ async fn main_(tcp_addr: SocketAddr) -> anyhow::Result<()> {
 }
 
 async fn handle_session(inc: TcpStream, channels: Channels, ports: Ports) -> anyhow::Result<()> {
-    ServerSession::await_handshake(inc, ports, channels)
+    ServerSession::init(inc, ports, channels)
         .await?
         .run_session()
         .await?;

@@ -1,102 +1,14 @@
-use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::{Arc, RwLock};
 
 use prost::Message;
-use tokio::net::{ToSocketAddrs, UdpSocket};
+use tokio::net::UdpSocket;
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
 use crate::{ports::PortRef, voice::*};
 
-#[derive(Default, Clone)]
-pub struct Channels {
-    inner: Arc<RwLock<HashMap<Uuid, Chatroom>>>,
-}
-
-impl Channels {
-    pub fn new() -> Self {
-        Self {
-            inner: Arc::default(),
-        }
-    }
-
-    pub fn get_or_create(&self, id: Uuid) -> Chatroom {
-        if let Some(room) = self.inner.read().unwrap().get(&id) {
-            return room.clone();
-        }
-        let room = Chatroom::new(id);
-        self.inner.write().unwrap().insert(id, room.clone());
-        room
-    }
-}
-
-#[derive(Clone)]
-pub struct Chatroom {
-    id: Uuid,
-    tx: broadcast::Sender<(Uuid, Voice)>,
-}
-
-impl Chatroom {
-    pub fn new(id: Uuid) -> Self {
-        Self {
-            id,
-            tx: broadcast::channel(100).0,
-        }
-    }
-
-    pub fn join(&self, id: Uuid) -> ChatRoomHandle {
-        ChatRoomHandle::new(self.tx.clone(), id)
-    }
-
-    pub fn id(&self) -> Uuid {
-        self.id
-    }
-}
-
-pub struct ChatRoomHandle {
-    rx: broadcast::Receiver<(Uuid, Voice)>,
-    tx: broadcast::Sender<(Uuid, Voice)>,
-    id: Uuid,
-}
-
-impl ChatRoomHandle {
-    fn new(tx: broadcast::Sender<(Uuid, Voice)>, id: Uuid) -> Self {
-        Self {
-            rx: tx.subscribe(),
-            tx,
-            id,
-        }
-    }
-
-    pub fn send(&self, msg: Voice) -> Result<usize, broadcast::error::SendError<(Uuid, Voice)>> {
-        self.tx.send((self.id, msg))
-    }
-}
-
-impl Clone for ChatRoomHandle {
-    fn clone(&self) -> Self {
-        ChatRoomHandle::new(self.tx.clone(), self.id)
-    }
-}
-
-pub struct SockWrap(UdpSocket);
-
-impl SockWrap {
-    async fn recv_from(&mut self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
-        tracing::trace!("recv_from");
-        self.0.recv_from(buf).await
-    }
-    async fn recv(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        tracing::trace!("recv");
-        self.0.recv(buf).await
-    }
-    async fn send_to<A: ToSocketAddrs>(&self, buf: &[u8], target: A) -> io::Result<usize> {
-        tracing::trace!("send to");
-        self.0.send_to(buf, target).await
-    }
-}
+use super::channel::Chatroom;
 
 #[derive(Debug)]
 pub struct InitMessage {
@@ -130,7 +42,7 @@ impl ControlChannel {
 
 pub struct VoiceConnection {
     chatroom: Chatroom,
-    udp: SockWrap,
+    udp: UdpSocket,
     id: Uuid,
     control_chan: mpsc::Receiver<ControlMessage>,
     buf: [u8; 1500],
@@ -140,7 +52,7 @@ pub struct VoiceConnection {
 impl VoiceConnection {
     pub fn addr(&self) -> Result<SocketAddr, io::Error> {
         // FIXME: want to return outside addr here
-        self.udp.0.local_addr()
+        self.udp.local_addr()
     }
 
     pub async fn new(
@@ -153,7 +65,7 @@ impl VoiceConnection {
         Ok((
             VoiceConnection {
                 chatroom,
-                udp: SockWrap(udp),
+                udp,
                 id,
                 control_chan: rx,
                 buf: [0; 1500],
@@ -206,9 +118,10 @@ impl VoiceConnection {
     }
 
     async fn peered(mut self, addr: SocketAddr) -> anyhow::Result<()> {
-        self.udp.0.connect(addr).await?;
+        self.udp.connect(addr).await?;
         tracing::info!("successfully peered with {addr}");
-        let ChatRoomHandle { mut rx, tx, id } = self.chatroom.join(self.id);
+        let mut channel_handle = self.chatroom.join(self.id);
+        let id = channel_handle.id();
         let mut sent = 0;
         loop {
             tokio::select! {
@@ -218,12 +131,12 @@ impl VoiceConnection {
                             let voice = ClientMessage::decode(&self.buf[..len])?;
                             match voice.payload {
                                 Some(client_message::Payload::Voice(voice)) => {
-                                    let _ = tx.send((id, voice));
+                                    let _ = channel_handle.send(voice);
                                 },
                                 Some(client_message::Payload::Ping(ping)) => {
                                     let pong = ServerMessage::pong(Pong { seq: ping.seq, sent });
                                     pong.encode(&mut self.buf.as_mut())?;
-                                    self.udp.0.send(&self.buf[..pong.encoded_len()]).await?;
+                                    self.udp.send(&self.buf[..pong.encoded_len()]).await?;
                                 },
                                 None => todo!(),
                             }
@@ -231,7 +144,7 @@ impl VoiceConnection {
                         Err(e) => return Err(e.into()),
                     }
                 },
-                recv = rx.recv() => {
+                recv = channel_handle.recv() => {
                     match recv {
                         Ok((pkt_id, voice)) => {
                             tracing::trace!("{} {}", id, pkt_id);
@@ -240,7 +153,7 @@ impl VoiceConnection {
                             }
                             let voice = ServerMessage::voice(voice, pkt_id);
                             voice.encode(&mut self.buf.as_mut_slice())?;
-                            self.udp.0.send(&self.buf[..voice.encoded_len()]).await?;
+                            self.udp.send(&self.buf[..voice.encoded_len()]).await?;
                             sent += 1;
                         },
                         Err(broadcast::error::RecvError::Lagged(n)) => {

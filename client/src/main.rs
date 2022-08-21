@@ -1,6 +1,6 @@
 mod voice;
 
-use std::net::{IpAddr, SocketAddr, UdpSocket};
+use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -9,11 +9,12 @@ use clap::Parser;
 use cpal::traits::{HostTrait, StreamTrait};
 use crossbeam::channel::Sender;
 use prost::Message as _;
-use rodio::DeviceTrait;
-use serde::{Deserialize, Serialize};
+use rodio::{DeviceTrait, OutputStream};
 use tracing_subscriber::prelude::*;
 use tungstenite::Message;
 use uuid::Uuid;
+
+use ws_proto::*;
 
 use crate::voice::*;
 
@@ -52,13 +53,11 @@ fn main() -> anyhow::Result<()> {
     let (mut stream, _) = tungstenite::connect(config.ws_endpoint)?;
     let id = Uuid::new_v4();
     let channel_id = config.room_id.unwrap_or_else(Uuid::new_v4);
-    stream.write_message(Message::Text(serde_json::to_string(&Init {
-        id: id.to_string(),
-    })?))?;
+    let json_s = serde_json::to_string(&ClientEvent::Init(Init { user_id: id }))?;
+    stream.write_message(Message::Text(json_s))?;
 
-    stream.write_message(Message::Text(serde_json::to_string(&VoiceEvent::Join {
-        channel_id,
-    })?))?;
+    let json_s = serde_json::to_string(&ClientEvent::Join(Join { channel_id }))?;
+    stream.write_message(Message::Text(json_s))?;
 
     let msg = stream.read_message()?;
     let Announce { ip, port } = serde_json::from_str::<Announce>(msg.to_text()?)?;
@@ -78,10 +77,12 @@ fn main() -> anyhow::Result<()> {
     let len = udp.recv(&mut buf)?;
     let IpDiscoveryResponse { ip, port } = IpDiscoveryResponse::decode(&buf[..len])?;
 
-    stream.write_message(Message::Text(dbg!(serde_json::to_string(&Announce {
-        ip: ip.parse()?,
-        port: port as _,
-    })?)))?;
+    stream.write_message(Message::Text(dbg!(serde_json::to_string(
+        &ClientEvent::UdpAnnounce(Announce {
+            ip: ip.parse()?,
+            port: port as _,
+        })
+    )?)))?;
     let msg = stream.read_message()?;
     let Ready { id } = serde_json::from_str::<Ready>(msg.to_text()?)?;
     println!("{}", id);
@@ -186,7 +187,7 @@ fn main() -> anyhow::Result<()> {
                 Instant::now() > self.start + Duration::from_millis(100)
             }
 
-            fn drain<'a>(&'a mut self) -> std::vec::Drain<'a, ServerVoice> {
+            fn drain(&mut self) -> std::vec::Drain<'_, ServerVoice> {
                 self.queue.sort_by(|v1, v2| v1.sequence.cmp(&v2.sequence));
                 let ret = self.queue.drain(..);
                 self.start = Instant::now();
@@ -291,10 +292,6 @@ fn main() -> anyhow::Result<()> {
             chan: rx,
             buf: Vec::new().into_iter(),
         };
-        use rodio::{source::Source, Decoder, OutputStream};
-        let host = cpal::default_host();
-        let device = host.default_output_device().unwrap();
-        let config = device.default_output_config().unwrap();
         let (_stream, stream_handle) = OutputStream::try_default().unwrap();
         let sink = rodio::Sink::try_new(&stream_handle).unwrap();
         // mix silence trakc?
@@ -302,24 +299,34 @@ fn main() -> anyhow::Result<()> {
         sink.sleep_until_end();
     });
     let t2 = std::thread::spawn(move || {
+        let mut last_send = Instant::now();
         loop {
             let now = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap();
-            stream.write_message(Message::Text(serde_json::to_string(&Event::Keepalive {
+            let json_s = serde_json::to_string(&ClientEvent::Keepalive(Keepalive {
                 sent_at: now.as_millis() as _,
-            })?))?;
-            let evt: Event = serde_json::from_str(stream.read_message()?.to_text()?)?;
+            }))?;
+            stream.write_message(Message::Text(json_s))?;
+            let evt: ServerEvent = serde_json::from_str(stream.read_message()?.to_text()?)?;
             match evt {
-                Event::Keepalive { sent_at } => {
+                ServerEvent::Keepalive(Keepalive { sent_at }) => {
                     let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?;
+                    // non-ping messages mess up the timing :s
                     tracing::debug!(
-                        "WS Ping: {}",
+                        "WS Pong: {}",
                         (now - Duration::from_millis(sent_at)).as_secs_f32()
                     );
+                    last_send = Instant::now();
                 }
+                ServerEvent::Ready(_) => todo!(),
+                ServerEvent::Joined(joined) => tracing::info!("{:?}", joined),
+                ServerEvent::UdpAnnounce(_) => todo!(),
+                ServerEvent::Left(left) => tracing::info!("{:?}", left),
             }
-            std::thread::sleep(Duration::from_millis(400));
+            let dur = Instant::now().duration_since(last_send);
+            let sleep = Duration::from_secs(2).saturating_sub(dur);
+            std::thread::sleep(sleep);
             // stream.close(None)?;
         }
         #[allow(unreachable_code)]
@@ -333,33 +340,6 @@ fn main() -> anyhow::Result<()> {
     // stream.write_u16::<BigEndian>(port);
     // udp.connect(SocketAddr::from(([127, 0, 0, 1], port)))?;
     Ok(())
-}
-
-#[derive(Deserialize, Serialize)]
-pub enum Event {
-    Keepalive { sent_at: u64 },
-}
-
-#[derive(Deserialize, Serialize)]
-pub enum VoiceEvent {
-    Join { channel_id: Uuid },
-    Leave,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct Init {
-    id: String,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct Announce {
-    ip: IpAddr,
-    port: u16,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct Ready {
-    id: Uuid,
 }
 
 impl ClientMessage {

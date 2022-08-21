@@ -23,6 +23,7 @@ tracing = { version = "0.1.36", features = ["log"] }
 tracing-subscriber = { version = "0.3.15", features = ["env-filter"] }
 tungstenite = { version = "0.17.3", features = ["rustls"] }
 uuid = { version = "1.1.2", features = ["v4", "serde"] }
+ws_proto = { path = "../ws_proto" }
 
 [build-dependencies]
 anyhow = "1.0.58"
