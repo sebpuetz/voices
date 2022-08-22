@@ -1,4 +1,5 @@
 mod voice;
+mod udp;
 
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::AtomicU64;
@@ -194,12 +195,12 @@ fn main() -> anyhow::Result<()> {
                 ret
             }
         }
-        let mut buf = [0; 1500];
         let mut state = State {
             start: Instant::now(),
             queue: Vec::with_capacity(10),
             received: set_received,
         };
+        let mut buf = [0; 1500];
         loop {
             let len = match rx_udp.recv(&mut buf) {
                 Ok(len) => len,

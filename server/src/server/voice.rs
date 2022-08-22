@@ -43,7 +43,7 @@ impl ControlChannel {
 pub struct VoiceConnection {
     chatroom: Chatroom,
     udp: UdpSocket,
-    id: Uuid,
+    client_id: Uuid,
     control_chan: mpsc::Receiver<ControlMessage>,
     buf: [u8; 1500],
     _port_ref: PortRef,
@@ -56,7 +56,7 @@ impl VoiceConnection {
     }
 
     pub async fn new(
-        id: Uuid,
+        client_id: Uuid,
         chatroom: Chatroom,
         port: PortRef,
     ) -> anyhow::Result<(Self, ControlChannel)> {
@@ -66,7 +66,7 @@ impl VoiceConnection {
             VoiceConnection {
                 chatroom,
                 udp,
-                id,
+                client_id,
                 control_chan: rx,
                 buf: [0; 1500],
                 _port_ref: port,
@@ -86,7 +86,7 @@ impl VoiceConnection {
                         }
                         Ok((len, sock)) => {
                             // tracing::debug!("read {len}  {:?}", self.buf);
-                            if let Err(e) = self.ip_discovery(len, sock, self.id).await {
+                            if let Err(e) = self.ip_discovery(len, sock, self.client_id).await {
                                 tracing::warn!("ip disco failed: {}\nread {len}, {:?}", e, &self.buf[..len]);
                             } else {
                                 tracing::info!("Succesfully handled ip disco");
@@ -120,7 +120,7 @@ impl VoiceConnection {
     async fn peered(mut self, addr: SocketAddr) -> anyhow::Result<()> {
         self.udp.connect(addr).await?;
         tracing::info!("successfully peered with {addr}");
-        let mut channel_handle = self.chatroom.join(self.id);
+        let mut channel_handle = self.chatroom.join(self.client_id);
         let id = channel_handle.id();
         let mut sent = 0;
         loop {
