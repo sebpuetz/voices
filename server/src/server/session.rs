@@ -37,7 +37,7 @@ pub enum UdpHostInfo {
 impl UdpHostInfo {
     pub async fn resolve(&self, port: u16) -> Result<Vec<SocketAddr>, anyhow::Error> {
         match self {
-            UdpHostInfo::StaticIp(ip) => Ok(vec![(SocketAddr::from((ip.clone(), port)))]),
+            UdpHostInfo::StaticIp(ip) => Ok(vec![(SocketAddr::from((*ip, port)))]),
             UdpHostInfo::Host(host) => Ok(tokio::net::lookup_host((host.as_str(), port))
                 .await?
                 .collect()),

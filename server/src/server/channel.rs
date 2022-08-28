@@ -80,13 +80,7 @@ impl Chatroom {
     }
 
     pub fn list(&self) -> Vec<ClientInfo> {
-        self.present
-            .read()
-            .unwrap()
-            .values()
-            .map(|v| v)
-            .cloned()
-            .collect()
+        self.present.read().unwrap().values().cloned().collect()
     }
 
     pub fn join(&self, info: ClientInfo) -> ChatRoomVoiceHandle {

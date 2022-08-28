@@ -249,10 +249,7 @@ impl State {
         self.start = Instant::now();
         let len = self.n_bytes;
         self.n_bytes = 0;
-        (
-            len,
-            out.into_iter().map(|v| v.payload.into_iter()).flatten(),
-        )
+        (len, out.into_iter().flat_map(|v| v.payload.into_iter()))
     }
 }
 

@@ -88,13 +88,13 @@ pub enum UdpError {
 impl UdpError {
     pub fn fatal(&self) -> bool {
         match self {
-            UdpError::IoError(io) => match io.kind() {
+            UdpError::IoError(io) => matches!(
+                io.kind(),
                 std::io::ErrorKind::NotFound
-                | std::io::ErrorKind::PermissionDenied
-                | std::io::ErrorKind::AddrInUse
-                | std::io::ErrorKind::ConnectionRefused => true,
-                _ => false,
-            },
+                    | std::io::ErrorKind::PermissionDenied
+                    | std::io::ErrorKind::AddrInUse
+                    | std::io::ErrorKind::ConnectionRefused
+            ),
             UdpError::DecodeError(_) => true,
             UdpError::EncodeError(_) => true,
         }

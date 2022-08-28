@@ -140,11 +140,7 @@ impl RecordTx {
             let lim = std::cmp::min(self.buf.len(), 700);
             let mut chunk = self.buf.split_off(lim);
             std::mem::swap(&mut chunk, &mut self.buf);
-            let chunk = chunk
-                .into_iter()
-                .map(|s| s.to_be_bytes())
-                .flatten()
-                .collect();
+            let chunk = chunk.into_iter().flat_map(|s| s.to_be_bytes()).collect();
             self.tx.blocking_send(chunk).expect("FIXME error");
         }
         Ok(())
