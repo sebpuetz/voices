@@ -1,4 +1,5 @@
 use std::net::IpAddr;
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -17,6 +18,7 @@ pub enum ClientEvent {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Init {
     pub user_id: Uuid,
+    pub name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -30,6 +32,15 @@ pub struct Keepalive {
     pub sent_at: u64,
 }
 
+impl Keepalive {
+    pub fn diff(&self) -> Duration {
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("Time shouldn't be before unix epoch");
+        now - Duration::from_millis(self.sent_at)
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Join {
     pub channel_id: Uuid,
@@ -40,24 +51,33 @@ pub struct Join {
 pub enum ServerEvent {
     Keepalive(Keepalive),
     Ready(Ready),
-    Joined(Joined),
+    Joined(Present),
     Left(Left),
     UdpAnnounce(Announce),
+    JoinError(JoinError),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Ready {
     pub id: Uuid,
+    pub src_id: u32,
+    pub present: Vec<Present>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Joined {
-    pub user: Uuid,
+pub struct Present {
+    pub user: String,
+    pub source_id: u32,
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct JoinError {
+    pub room_id: Uuid,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Left {
-    pub user: Uuid,
+    pub user: String,
+    pub source_id: u32,
 }
 
 pub trait MessageExt {

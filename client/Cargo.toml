@@ -15,13 +15,16 @@ futures-util = "0.3.21"
 hound = "3.4.0"
 prost = "0.11.0"
 prost-types = "0.11.0"
-rodio = "0.15.0"
+rodio = { version = "0.15.0", features = ["wav"] }
 serde = { version = "1.0.140", features = ["derive"] }
 serde_json = "1.0.82"
+thiserror = "1.0.32"
 tokio = { version = "1.20.1", features = ["full"] }
+tokio-tungstenite = { version = "0.17.2", features = ["rustls", "tokio-rustls"] }
 tracing = { version = "0.1.36", features = ["log"] }
 tracing-subscriber = { version = "0.3.15", features = ["env-filter"] }
 tungstenite = { version = "0.17.3", features = ["rustls"] }
+udp-proto = { version = "0.1.0", path = "../udp-proto" }
 uuid = { version = "1.1.2", features = ["v4", "serde"] }
 ws_proto = { path = "../ws_proto" }
 

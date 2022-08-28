@@ -21,8 +21,8 @@ pub struct Voice {
 pub struct ServerVoice {
     #[prost(uint64, tag="1")]
     pub sequence: u64,
-    #[prost(bytes="vec", tag="2")]
-    pub source_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint32, tag="2")]
+    pub source_id: u32,
     #[prost(bytes="vec", tag="3")]
     pub payload: ::prost::alloc::vec::Vec<u8>,
 }

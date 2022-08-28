@@ -1,13 +1,14 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use anyhow::Context;
-use futures_util::FutureExt;
+use futures_util::{Future, FutureExt};
 use tokio::net::TcpStream;
 use tokio::select;
 use tokio::sync::broadcast;
+use tracing::Instrument;
 use uuid::Uuid;
-use ws_proto::{ClientEvent, Join};
+use ws_proto::{ClientEvent, Init, Join, Present};
 
 use crate::ports::Ports;
 use crate::server::ws::ControlStream;
@@ -15,52 +16,86 @@ use crate::util::TimeoutExt;
 
 use super::channel::{ChannelEvent, ChannelEventKind, Channels, Chatroom};
 use super::voice::{ControlChannel, VoiceConnection};
-use super::ws::ControlStreamError;
 
 pub struct ServerSession {
     ctl: ControlStream,
     client_id: Uuid,
+    client_name: String,
     udp_ports: Ports,
     channels: Channels,
     voice: Option<VoiceHandle>,
+    host_info: UdpHostInfo,
+}
+
+// FIXME: remove, hard-coded to host
+#[derive(Debug, Clone)]
+pub enum UdpHostInfo {
+    StaticIp(IpAddr),
+    Host(String),
+}
+
+impl UdpHostInfo {
+    pub async fn resolve(&self, port: u16) -> Result<Vec<SocketAddr>, anyhow::Error> {
+        match self {
+            UdpHostInfo::StaticIp(ip) => Ok(vec![(SocketAddr::from((ip.clone(), port)))]),
+            UdpHostInfo::Host(host) => Ok(tokio::net::lookup_host((host.as_str(), port))
+                .await?
+                .collect()),
+        }
+    }
 }
 
 impl ServerSession {
-    #[tracing::instrument(skip(ctl, channels))]
+    #[tracing::instrument(skip_all)]
     pub async fn init(
         ctl: TcpStream,
         udp_ports: Ports,
         channels: Channels,
+        host_info: UdpHostInfo,
     ) -> anyhow::Result<Self> {
         let ctl = Duration::from_millis(500)
             .timeout(tokio_tungstenite::accept_async(ctl))
             .await??;
         let mut ctl = ControlStream::new(ctl);
         tracing::debug!("waiting for handshake");
-        let client_id = ctl.await_handshake().await?.user_id;
-        tracing::debug!("handshake succesful: {}", client_id);
+        let Init { user_id, name } = ctl.await_handshake().await?;
+        tracing::debug!("handshake succesful: {}", user_id);
         Ok(Self {
             ctl,
-            client_id,
+            client_id: user_id,
+            client_name: name,
             udp_ports,
             channels,
             voice: None,
+            host_info,
         })
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self), fields(client_id=%self.client_id, name=&self.client_name))]
     pub async fn run_session(mut self) -> anyhow::Result<()> {
         tracing::info!("session running");
         loop {
             let evt = self.ctl.next_event();
-            let chan_notify = self
-                .voice
-                .as_mut()
-                .map(|v| v.updates.recv().boxed())
-                .unwrap_or_else(|| std::future::pending().boxed());
+            let (handle, chan_notify) = match self.voice.as_mut() {
+                Some(v) => ((&mut v.handle).boxed(), v.updates.recv().boxed()),
+                None => (
+                    std::future::pending().boxed(),
+                    std::future::pending().boxed(),
+                ),
+            };
             select! {
+                handle = handle => {
+                    if let Err(e) = handle {
+                        tracing::error!("Voice errored: {}", e);
+                    }
+                    self.voice = None;
+                }
                 evt = evt => {
-                    self.handle_event(evt).await?;
+                    if let Some(evt) = evt {
+                        self.handle_event(evt).await?;
+                    } else {
+                        return Ok(());
+                    }
                 },
                 Ok(chan_event) = chan_notify => {
                     self.handle_chan_event(chan_event).await?;
@@ -73,54 +108,63 @@ impl ServerSession {
         if self.client_id == chan_event.source() {
             return Ok(());
         }
+        let source_id = chan_event.source_id();
         match chan_event.kind() {
             ChannelEventKind::Joined(joined) => {
-                self.ctl.joined(*joined).await?;
+                self.ctl.joined(joined.into(), source_id).await?;
             }
             ChannelEventKind::Left(left) => {
-                self.ctl.left(*left).await?;
+                self.ctl.left(left.into(), source_id).await?;
             }
         }
         Ok(())
     }
 
-    async fn handle_event(
-        &mut self,
-        evt: Result<ClientEvent, ControlStreamError>,
-    ) -> anyhow::Result<()> {
+    async fn handle_event(&mut self, evt: ClientEvent) -> anyhow::Result<()> {
         match evt {
-            Ok(ClientEvent::Init(_)) => {
+            ClientEvent::Init(_) => {
                 tracing::warn!("unexpected init message");
                 self.stop_voice().await;
                 return Ok(());
             }
-            Ok(ClientEvent::Disconnect) => {
+            ClientEvent::Disconnect => {
                 self.stop_voice().await;
                 return Ok(());
             }
-            Ok(ClientEvent::Join(Join { channel_id })) => {
+            ClientEvent::Join(Join { channel_id }) => {
                 tracing::info!("joining {}", channel_id);
                 self.stop_voice().await;
                 let room = self.channels.get_or_create(channel_id);
                 let room_id = room.id();
-                let voice = self.initialize_voice_connection(room).await?;
-                self.voice = Some(voice);
-                self.ctl.voice_ready(room_id).await?;
+                let room_ = room.clone();
+                if let Some(voice) = self.initialize_voice_connection(room).await? {
+                    let src_id = voice.source_id;
+                    self.voice = Some(voice);
+                    let present = room_
+                        .list()
+                        .into_iter()
+                        .filter_map(|v| {
+                            (v.source_id != src_id).then(|| Present {
+                                user: v.name,
+                                source_id: v.source_id,
+                            })
+                        })
+                        .collect();
+                    self.ctl.voice_ready(room_id, src_id, present).await?;
+                } else {
+                    self.ctl.join_error(room_id).await?;
+                }
             }
-            Ok(ClientEvent::Leave) => {
+            ClientEvent::Leave => {
                 tracing::info!("leave");
                 self.stop_voice().await;
             }
-            Ok(ClientEvent::UdpAnnounce(_)) => {
+            ClientEvent::UdpAnnounce(_) => {
                 tracing::warn!("unexpected udp announce message");
                 self.stop_voice().await;
             }
-            Ok(ClientEvent::Keepalive(_)) => {
+            ClientEvent::Keepalive(_) => {
                 unreachable!("Keepalive is handled by WS task");
-            }
-            Err(e) => {
-                tracing::error!("Control stream error: {}", e);
-                return Err(e.into());
             }
         }
         Ok(())
@@ -132,19 +176,34 @@ impl ServerSession {
         }
     }
 
-    #[tracing::instrument(skip(self, room))]
     pub async fn initialize_voice_connection(
         &mut self,
         room: Chatroom,
-    ) -> anyhow::Result<VoiceHandle> {
+    ) -> anyhow::Result<Option<VoiceHandle>> {
         tracing::debug!("announcing udp");
-        let port = self.udp_ports.get().context("no open udp ports")?;
+        let port = match self.udp_ports.get() {
+            Some(port) => port,
+            None => {
+                tracing::warn!("no free udp port");
+                return Ok(None);
+            }
+        };
         let room_id = room.id();
         let room2 = room.clone();
-        let (voice, ctl_tx) = VoiceConnection::new(self.client_id, room, port).await?;
-        let udp_addr = voice.addr()?;
-        tracing::debug!("udp running on {}", udp_addr);
-        let voice = tokio::spawn(voice.run());
+        let port_ = port.port;
+        let (voice, ctl_tx) =
+            VoiceConnection::new(self.client_id, self.client_name.clone(), room, port).await?;
+        let source_id = voice.source_id();
+
+        let udp_addr = self
+            .host_info
+            .resolve(port_)
+            .await
+            .context("Failed to resolve")?
+            .pop()
+            .context("didn't get ip")?;
+        tracing::debug!("udp running on {:?}", udp_addr);
+        let voice = tokio::spawn(voice.run().instrument(tracing::Span::current()));
         self.ctl.announce_udp(udp_addr).await?;
         tracing::debug!("announced udp");
 
@@ -155,12 +214,13 @@ impl ServerSession {
         tracing::debug!("received client udp addr {client_udp}");
         ctl_tx.init(client_udp).await?;
         tracing::debug!("successfully notified udp task");
-        Ok(VoiceHandle {
+        Ok(Some(VoiceHandle {
             room_id,
             handle: voice,
             ctl_tx,
             updates: room2.updates(),
-        })
+            source_id,
+        }))
     }
 }
 
@@ -170,153 +230,16 @@ pub struct VoiceHandle {
     handle: tokio::task::JoinHandle<()>,
     ctl_tx: ControlChannel,
     updates: broadcast::Receiver<ChannelEvent>,
+    source_id: u32,
 }
-// pub struct ServerControlStream {
-//     inner: ControlStream,
-// }
 
-// impl ServerControlStream {
-//     pub async fn new(inner: TcpStream, timeout: Duration) -> anyhow::Result<Self> {
-//         Ok(Self {
-//             inner: ControlStream::new(inner, timeout).await?,
-//         })
-//     }
+impl Future for VoiceHandle {
+    type Output = anyhow::Result<()>;
 
-//     pub async fn await_handshake(&mut self) -> Result<Init, anyhow::Error> {
-//         self.inner.recv_json::<Init>().await.map_err(Into::into)
-//     }
-
-//     pub async fn announce_voice(&mut self, udp_addr: SocketAddr) -> anyhow::Result<()> {
-//         self.inner
-//             .send_json(&Announce {
-//                 ip: udp_addr.ip(),
-//                 port: udp_addr.port(),
-//             })
-//             .await?;
-//         Ok(())
-//     }
-
-//     pub async fn await_client_udp(&mut self) -> anyhow::Result<Announce> {
-//         self.inner.recv_json().await.map_err(Into::into)
-//     }
-
-//     pub async fn ready(&mut self, id: Uuid) -> anyhow::Result<()> {
-//         self.inner.send_json(&Ready { id }).await?;
-//         Ok(())
-//     }
-
-//     pub async fn next_event(&mut self) -> Result<Event, ControlStreamError> {
-//         self.inner.recv_json().await
-//     }
-
-//     pub async fn respond_keepalive(&mut self, sent_at: u64) -> Result<(), ControlStreamError> {
-//         self.inner.send_json(&Event::Keepalive { sent_at }).await?;
-//         Ok(())
-//     }
-
-//     pub async fn close(self) {
-//         let _ = self.inner.close();
-//     }
-// }
-
-// #[derive(Deserialize, Serialize)]
-// pub enum Event {
-//     Keepalive { sent_at: u64 },
-//     Join { channel_id: Uuid },
-//     Leave,
-// }
-
-// #[derive(Serialize, Deserialize)]
-// pub struct Init {
-//     id: String,
-// }
-
-// #[derive(Serialize, Deserialize)]
-// pub struct Announce {
-//     ip: IpAddr,
-//     port: u16,
-// }
-
-// #[derive(Serialize, Deserialize)]
-// pub struct Ready {
-//     id: Uuid,
-// }
-
-// pub struct ControlStream {
-//     inner: WebSocketStream<TcpStream>,
-//     timeout: Duration,
-// }
-
-// impl ControlStream {
-//     pub async fn new(inner: TcpStream, timeout: Duration) -> anyhow::Result<Self> {
-//         let inner = timeout
-//             .timeout(tokio_tungstenite::accept_async(inner))
-//             .await??;
-//         Ok(Self { inner, timeout })
-//     }
-// }
-
-// impl ControlStream {
-//     async fn recv_json<V: DeserializeOwned>(&mut self) -> Result<V, ControlStreamError> {
-//         let msg = self
-//             .timeout
-//             .timeout(self.inner.next())
-//             .await
-//             .map_err(|_| ControlStreamError::RecvTimeout)?
-//             .ok_or(ControlStreamError::StreamClosed)?
-//             .map_err(ControlStreamError::StreamError)?;
-//         if msg.is_close() {
-//             return Err(ControlStreamError::StreamClosed);
-//         }
-//         Ok(serde_json::from_slice(msg.as_bytes()).unwrap())
-//     }
-
-//     async fn send_json<V: Serialize>(&mut self, payload: &V) -> Result<(), ControlStreamError> {
-//         let msg = tungstenite::Message::Text(serde_json::to_string(payload).unwrap());
-//         self.timeout
-//             .timeout(self.inner.send(msg))
-//             .await
-//             .map_err(|_| ControlStreamError::SendTimeout)?
-//             .map_err(ControlStreamError::StreamError)?;
-//         Ok(())
-//     }
-
-//     async fn close(mut self) -> anyhow::Result<()> {
-//         self.inner.close(None).await?;
-//         Ok(())
-//     }
-// }
-
-// #[derive(Debug, thiserror::Error)]
-// pub enum ControlStreamError {
-//     #[error("timeout waiting for message")]
-//     RecvTimeout,
-//     #[error("timeout sending message")]
-//     SendTimeout,
-//     #[error("stream closed")]
-//     StreamClosed,
-//     #[error("stream error: {0}")]
-//     StreamError(tungstenite::Error),
-//     #[error("invalid message")]
-//     InvalidMessage {
-//         msg: tungstenite::Message,
-//         src: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
-//     },
-//     #[error("deser error")]
-//     DeserError {
-//         msg: tungstenite::Message,
-//         src: Box<dyn std::error::Error + Send + Sync + 'static>,
-//     },
-// }
-
-// impl ControlStreamError {
-//     pub fn is_timeout(&self) -> bool {
-//         use ControlStreamError::*;
-//         matches!(self, RecvTimeout | SendTimeout)
-//     }
-
-//     pub fn is_closed(&self) -> bool {
-//         use ControlStreamError::*;
-//         matches!(self, StreamClosed)
-//     }
-// }
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        self.handle.poll_unpin(cx).map_err(Into::into)
+    }
+}

@@ -1593,6 +1593,7 @@ checksum = "f714dd15bead90401d77e04243611caec13726c2408afd5b31901dfcdcb3b181"
 dependencies = [
  "futures-util",
  "log",
+ "rustls",
  "tokio",
  "tokio-rustls",
  "tungstenite",
@@ -1710,6 +1711,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dcf81ac59edc17cc8697ff311e8f5ef2d99fcbd9817b34cec66f90b6c3dfd987"
 
 [[package]]
+name = "udp-proto"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "unicode-bidi"
 version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1783,10 +1793,12 @@ dependencies = [
  "anyhow",
  "byteorder",
  "bytes",
+ "clap",
  "futures-util",
  "prost",
  "prost-build",
  "prost-types",
+ "rand",
  "serde",
  "serde_json",
  "strum",
@@ -1798,6 +1810,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tungstenite",
+ "udp-proto",
  "uuid",
  "ws_proto",
 ]
@@ -1819,10 +1832,13 @@ dependencies = [
  "rodio",
  "serde",
  "serde_json",
+ "thiserror",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
  "tungstenite",
+ "udp-proto",
  "uuid",
  "ws_proto",
 ]

@@ -17,7 +17,7 @@ message Voice {
 
 message ServerVoice {
     uint64 sequence = 1;
-    bytes source_id = 2;
+    uint32 source_id = 2;
     bytes payload = 3;
 }
 

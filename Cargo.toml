@@ -1,2 +1,2 @@
 [workspace]
-members = ["./client", "./server", "./ws_proto"]
+members = ["./client", "./server", "./ws_proto", "./udp-proto"]

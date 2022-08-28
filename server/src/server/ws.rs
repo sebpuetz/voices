@@ -9,7 +9,9 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_tungstenite::WebSocketStream;
 use uuid::Uuid;
-use ws_proto::{Announce, ClientEvent, Init, Joined, Left, MessageExt, Ready, ServerEvent};
+use ws_proto::{
+    Announce, ClientEvent, Init, JoinError, Left, MessageExt, Present, Ready, ServerEvent,
+};
 
 use crate::util::TimeoutExt;
 
@@ -26,10 +28,13 @@ impl ControlStream {
         let (backward_tx, backward_rx) = mpsc::channel(10);
         tokio::spawn(async move {
             let fut = ControlStreamPriv::new(ws, forward_tx, backward_rx).run();
-            if let Err(e) = fut.await {
-                tracing::error!("WS task errored out: {}", e);
-            } else {
-                tracing::info!("WS task closed normally");
+            match fut.await {
+                Ok(_) => {
+                    tracing::info!("WS task closed normally");
+                }
+                Err(e) => {
+                    tracing::error!("WS task errored out: {}", e);
+                }
             }
         });
         Self {
@@ -53,23 +58,40 @@ impl ControlStream {
         .await
     }
 
-    pub async fn joined(&self, user: Uuid) -> Result<(), ControlStreamError> {
-        self.send(ServerEvent::Joined(Joined { user })).await
-    }
-    pub async fn left(&self, user: Uuid) -> Result<(), ControlStreamError> {
-        self.send(ServerEvent::Left(Left { user })).await
+    pub async fn joined(&self, user: String, source_id: u32) -> Result<(), ControlStreamError> {
+        self.send(ServerEvent::Joined(Present { user, source_id }))
+            .await
     }
 
-    pub async fn voice_ready(&self, sess_id: Uuid) -> Result<(), ControlStreamError> {
-        self.send(ServerEvent::Ready(Ready { id: sess_id })).await
+    pub async fn join_error(&self, room_id: Uuid) -> Result<(), ControlStreamError> {
+        self.send(ServerEvent::JoinError(JoinError { room_id }))
+            .await
     }
 
-    pub async fn next_event(&mut self) -> Result<ClientEvent, ControlStreamError> {
-        self.inc.recv().await.ok_or(ControlStreamError::End)
+    pub async fn left(&self, user: String, source_id: u32) -> Result<(), ControlStreamError> {
+        self.send(ServerEvent::Left(Left { user, source_id })).await
+    }
+
+    pub async fn voice_ready(
+        &self,
+        sess_id: Uuid,
+        src_id: u32,
+        present: Vec<Present>,
+    ) -> Result<(), ControlStreamError> {
+        self.send(ServerEvent::Ready(Ready {
+            id: sess_id,
+            src_id,
+            present,
+        }))
+        .await
+    }
+
+    pub async fn next_event(&mut self) -> Option<ClientEvent> {
+        self.inc.recv().await
     }
 
     pub async fn await_handshake(&mut self) -> Result<Init, ControlStreamError> {
-        match self.next_event().await? {
+        match self.next_event().await.ok_or(ControlStreamError::End)? {
             ClientEvent::Init(init) => Ok(init),
             evt => Err(ControlStreamError::UnexpectedMessage {
                 expected: "Init",
@@ -79,7 +101,7 @@ impl ControlStream {
     }
 
     pub async fn await_client_udp(&mut self) -> Result<Announce, ControlStreamError> {
-        match self.next_event().await? {
+        match self.next_event().await.ok_or(ControlStreamError::End)? {
             ClientEvent::UdpAnnounce(announce) => Ok(announce),
             evt => Err(ControlStreamError::UnexpectedMessage {
                 expected: "UdpAnnounce",
@@ -170,11 +192,18 @@ impl ControlStreamPriv {
         message: tungstenite::Message,
     ) -> Result<ControlFlow, PrivControlStreamError> {
         if message.is_close() {
-            self.send_timeout
+            tracing::debug!("received close");
+            match self
+                .send_timeout
                 .timeout(self.ws.close(None))
                 .await
-                .map_err(|_| PrivControlStreamError::SendTimeout)??;
-            return Ok(ControlFlow::Stop);
+                .map_err(|_| PrivControlStreamError::SendTimeout)?
+            {
+                Ok(_) | Err(tungstenite::Error::ConnectionClosed) => {
+                    return Ok(ControlFlow::Stop);
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
         let evt = message
             .json()
