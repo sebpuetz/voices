@@ -1,5 +1,4 @@
 use std::io::Cursor;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -147,7 +146,7 @@ pub async fn play(
     sink: rodio::Sink,
     notify_tx: Arc<SourcesQueueInput<i16>>,
 ) {
-    let playing = Arc::new(AtomicBool::new(false));
+    let mut playing: Option<tokio::task::JoinHandle<()>> = None;
     while let Some(stream) = play_rx.recv().await {
         let quiet = match stream {
             PlayerEvent::Joined { rx: joined, quiet } => {
@@ -166,21 +165,12 @@ pub async fn play(
         if !quiet {
             let bell = rodio::decoder::Decoder::new_wav(Cursor::new(BELL)).unwrap();
             let notify_tx = notify_tx.clone();
-            let playing_ = playing.clone();
-            let playing = playing
-                .compare_exchange(
-                    false,
-                    true,
-                    std::sync::atomic::Ordering::SeqCst,
-                    std::sync::atomic::Ordering::SeqCst,
-                )
-                .is_ok();
-            if !playing {
-                let _ = tokio::task::spawn_blocking(move || {
+            let not_playing = playing.as_ref().map(|v| v.is_finished()).unwrap_or(true);
+            if not_playing {
+                playing = Some(tokio::task::spawn_blocking(move || {
                     let rx = notify_tx.append_with_signal(bell);
                     let _ = rx.recv();
-                    playing_.store(false, std::sync::atomic::Ordering::SeqCst)
-                });
+                }));
             } else {
                 tracing::debug!("not playing sound");
             }
@@ -225,9 +215,14 @@ impl State {
 impl State {
     fn push(&mut self, voice: ServerVoice) -> bool {
         if self.seq_cutoff > voice.sequence {
-            tracing::warn!("dropping stale voice packet");
+            tracing::warn!(
+                "dropping stale voice packet oldest ({}) dropped ({})",
+                self.seq_cutoff,
+                voice.sequence
+            );
         }
-        if Instant::now().duration_since(self.last) > Duration::from_millis(100) {
+        if self.last.elapsed() > Duration::from_millis(100) {
+            tracing::warn!("clearing state after receiving 100ms later frame");
             self.clear();
             self.n_bytes += voice.payload.len();
             self.queue.push(voice);
