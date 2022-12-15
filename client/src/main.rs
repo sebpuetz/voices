@@ -1,7 +1,6 @@
 pub mod mic;
 mod play;
 mod udp;
-mod voice;
 mod ws;
 
 use std::net::SocketAddr;
@@ -18,7 +17,7 @@ use ws_proto::*;
 #[clap(name = "voice-client")]
 #[clap(author, version, about, long_about = None)]
 struct Config {
-    #[clap(long, default_value = "ws://localhost:33335")]
+    #[clap(long, default_value = "ws://localhost:33332")]
     ws_endpoint: String,
     #[clap(long)]
     room_id: Option<Uuid>,

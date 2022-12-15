@@ -1,57 +1,51 @@
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::time::Duration;
 
-use anyhow::Context;
 use futures_util::{Future, FutureExt};
 use tokio::net::TcpStream;
 use tokio::select;
 use tokio::sync::broadcast;
 use tracing::Instrument;
 use uuid::Uuid;
+// TODO: disentangle voice server & channels
+use voice_server::channel::{ChannelEvent, ChannelEventKind, Channels, Chatroom};
+use voice_server::{SetupError, VoiceControl, VoiceServer};
 use ws_proto::{ClientEvent, Init, Join, Present};
 
-use crate::ports::Ports;
 use crate::server::ws::ControlStream;
 use crate::util::TimeoutExt;
 
-use super::channel::{ChannelEvent, ChannelEventKind, Channels, Chatroom};
-use super::voice::{ControlChannel, VoiceConnection};
+use super::ws::ControlStreamError;
 
+/// Representation of a client session
+///
+/// Owns a handle to a [`VoiceServer`] and the known [`Channels`].
+///
+/// Has a [`VoiceHandle`] if the client is currently in a channel.
 pub struct ServerSession {
-    ctl: ControlStream,
+    // client info, received in init msg
     client_id: Uuid,
     client_name: String,
-    udp_ports: Ports,
-    channels: Channels,
+    // eventloop / backwards chan
+    ctl: ControlStream,
+    // optionally connected channel
     voice: Option<VoiceHandle>,
-    host_info: UdpHostInfo,
-}
 
-// FIXME: remove, hard-coded to host
-#[derive(Debug, Clone)]
-pub enum UdpHostInfo {
-    StaticIp(IpAddr),
-    Host(String),
-}
-
-impl UdpHostInfo {
-    pub async fn resolve(&self, port: u16) -> Result<Vec<SocketAddr>, anyhow::Error> {
-        match self {
-            UdpHostInfo::StaticIp(ip) => Ok(vec![(SocketAddr::from((*ip, port)))]),
-            UdpHostInfo::Host(host) => Ok(tokio::net::lookup_host((host.as_str(), port))
-                .await?
-                .collect()),
-        }
-    }
+    // server handles
+    voice_server_handle: VoiceServer,
+    // channel registry
+    channels: Channels,
 }
 
 impl ServerSession {
+    /// Initialize the session on the incoming stream.
+    ///
+    /// Waits for the client handshake.
     #[tracing::instrument(skip_all)]
     pub async fn init(
         ctl: TcpStream,
-        udp_ports: Ports,
+        voice_server_handle: VoiceServer,
         channels: Channels,
-        host_info: UdpHostInfo,
     ) -> anyhow::Result<Self> {
         let ctl = Duration::from_millis(500)
             .timeout(tokio_tungstenite::accept_async(ctl))
@@ -64,13 +58,15 @@ impl ServerSession {
             ctl,
             client_id: user_id,
             client_name: name,
-            udp_ports,
+            voice_server_handle,
             channels,
             voice: None,
-            host_info,
         })
     }
 
+    /// Run the client session to completion.
+    ///
+    /// Tracks the status of the optional voice connection and related channel events as well as client events.
     #[tracing::instrument(skip(self), fields(client_id=%self.client_id, name=&self.client_name))]
     pub async fn run_session(mut self) -> anyhow::Result<()> {
         tracing::info!("session running");
@@ -104,7 +100,10 @@ impl ServerSession {
         }
     }
 
-    async fn handle_chan_event(&mut self, chan_event: ChannelEvent) -> anyhow::Result<()> {
+    async fn handle_chan_event(
+        &mut self,
+        chan_event: ChannelEvent,
+    ) -> Result<(), ControlStreamError> {
         if self.client_id == chan_event.source() {
             return Ok(());
         }
@@ -144,7 +143,7 @@ impl ServerSession {
                         .list()
                         .into_iter()
                         .filter_map(|v| {
-                            (v.source_id != src_id).then(|| Present {
+                            (v.source_id != src_id).then_some(Present {
                                 user: v.name,
                                 source_id: v.source_id,
                             })
@@ -170,38 +169,43 @@ impl ServerSession {
         Ok(())
     }
 
+    /// Sends a stop signal to the voice connection if there is one.
     async fn stop_voice(&mut self) {
         if let Some(voice) = self.voice.take() {
             let _ = voice.ctl_tx.stop().await;
         }
     }
 
+    /// Initialize a voice connection for the client on the requested [`Chatroom`]
+    ///
+    /// 1. Talks to the [`VoiceServer`] to obtain the server side voice connection info.
+    /// 2. Announces this info to the client
+    /// 2.1. (optional) client can use this info to discover its external IP at the voice server
+    /// 3. Wait for the client to provide its external address
+    /// 4. Provide client info to voice server to let it initialize the connection.
     pub async fn initialize_voice_connection(
         &mut self,
         room: Chatroom,
     ) -> anyhow::Result<Option<VoiceHandle>> {
         tracing::debug!("announcing udp");
-        let port = match self.udp_ports.get() {
-            Some(port) => port,
-            None => {
+        let room_id = room.id();
+        let room2 = room.clone();
+        // should return source_id
+        let (voice, ctl_tx) = match self
+            .voice_server_handle
+            .connection(self.client_id, self.client_name.clone(), room)
+            .await
+        {
+            Ok(o) => o,
+            Err(SetupError::NoOpenPorts) => {
                 tracing::warn!("no free udp port");
                 return Ok(None);
             }
+            Err(e) => return Err(e.into()),
         };
-        let room_id = room.id();
-        let room2 = room.clone();
-        let port_ = port.port;
-        let (voice, ctl_tx) =
-            VoiceConnection::new(self.client_id, self.client_name.clone(), room, port).await?;
         let source_id = voice.source_id();
 
-        let udp_addr = self
-            .host_info
-            .resolve(port_)
-            .await
-            .context("Failed to resolve")?
-            .pop()
-            .context("didn't get ip")?;
+        let udp_addr = voice.udp_addr();
         tracing::debug!("udp running on {:?}", udp_addr);
         let voice = tokio::spawn(voice.run().instrument(tracing::Span::current()));
         self.ctl.announce_udp(udp_addr).await?;
@@ -228,7 +232,7 @@ impl ServerSession {
 pub struct VoiceHandle {
     room_id: Uuid,
     handle: tokio::task::JoinHandle<()>,
-    ctl_tx: ControlChannel,
+    ctl_tx: VoiceControl,
     updates: broadcast::Receiver<ChannelEvent>,
     source_id: u32,
 }

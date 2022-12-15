@@ -6,8 +6,9 @@ use rodio::dynamic_mixer::DynamicMixerController;
 use rodio::queue::SourcesQueueInput;
 use rodio::OutputStream;
 use tokio::sync::mpsc;
+use voice_proto::ServerVoice;
 
-use crate::voice::ServerVoice;
+// TODO: opus decoders
 
 pub struct PcmI16<I> {
     samples: I,

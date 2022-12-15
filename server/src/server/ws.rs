@@ -168,13 +168,8 @@ impl ControlStreamPriv {
                     }
                 }
                 back_msg = back => {
-                    match back_msg {
-                        Some(back_msg) => {
-                            self.send_json(&back_msg).await?;
-                        }
-                        None => {
-
-                        }
+                    if let Some(back_msg) = back_msg {
+                        self.send_json(&back_msg).await?;
                     }
                 }
                 _ = deadline => {

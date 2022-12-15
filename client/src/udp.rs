@@ -9,10 +9,10 @@ use tokio::select;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Instant};
 use udp_proto::{UdpError, UdpWithBuf};
+use voice_proto::*;
 use uuid::Uuid;
 
 use crate::play::{PlayTx, Player};
-use crate::voice::*;
 use crate::{mic, play};
 
 pub struct UdpSetup {
@@ -164,7 +164,7 @@ pub async fn udp_tx(
                         .duration_since(SystemTime::UNIX_EPOCH)
                         .unwrap()
                         .as_millis();
-                    let payload = crate::voice::Voice {
+                    let payload = Voice {
                         payload: voice,
                         sequence: sequence as _,
                     };
@@ -308,19 +308,5 @@ pub async fn udp_rx(
                 anyhow::bail!("fucked up");
             }
         }
-    }
-}
-
-impl ClientMessage {
-    pub fn new(msg: client_message::Payload) -> Self {
-        ClientMessage { payload: Some(msg) }
-    }
-
-    pub fn ping(ping: Ping) -> Self {
-        ClientMessage::new(client_message::Payload::Ping(ping))
-    }
-
-    pub fn voice(voice: Voice) -> Self {
-        ClientMessage::new(client_message::Payload::Voice(voice))
     }
 }

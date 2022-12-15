@@ -1,26 +1,24 @@
-pub mod ports;
 pub mod server;
 mod util;
-pub mod voice;
 
 use std::net::SocketAddr;
 
+use anyhow::Context;
 use clap::Parser;
-use ports::Ports;
 use server::session::ServerSession;
 use tokio::net::TcpStream;
+use tracing::subscriber::set_global_default;
 use tracing::Instrument;
+use tracing_log::LogTracer;
 use tracing_subscriber::prelude::*;
-use tracing_subscriber::util::SubscriberInitExt;
+use voice_server::channel::Channels;
+use voice_server::{Ports, VoiceServer};
 
-use crate::server::channel::Channels;
-use crate::server::session::UdpHostInfo;
-
-#[derive(Parser)] // requires `derive` feature
-#[clap(name = "voice-client")]
+#[derive(Parser)]
+#[clap(name = "voice-server")]
 #[clap(author, version, about, long_about = None)]
 struct Config {
-    #[clap(long, default_value_t = 33335)]
+    #[clap(long, default_value_t = 33332)]
     ws_listen_port: u16,
     #[clap(long, default_value_t = 33333)]
     first_udp_port: u16,
@@ -42,31 +40,38 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn main_() -> anyhow::Result<()> {
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "INFO".into()),
-        ))
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    set_global_default(
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::EnvFilter::new(
+                std::env::var("RUST_LOG").unwrap_or_else(|_| "INFO".into()),
+            ))
+            .with(tracing_subscriber::fmt::layer()),
+    )?;
+    LogTracer::init()?;
     let config = Config::parse();
     let tcp_addr = SocketAddr::from(([0, 0, 0, 0], config.ws_listen_port));
     let ctl_listener = tokio::net::TcpListener::bind(tcp_addr).await?;
     tracing::info!("Control listening on {}", ctl_listener.local_addr()?);
     let channels = Channels::new();
     let ports = Ports::new(config.first_udp_port, config.udp_ports as _);
-    let host_info = UdpHostInfo::Host(config.udp_host);
+    let host_addr = tokio::net::lookup_host((&*config.udp_host, 0))
+        .await
+        .context("Failed to resolve UDP host")?
+        .next()
+        .context("Failed to resolve UDP host")?
+        .ip();
+    let voice_server = VoiceServer::new(host_addr, ports);
 
     loop {
         tracing::debug!("waiting for tcp connection");
         let (inc, addr) = ctl_listener.accept().await?;
         tracing::debug!("accepted tcp connection from {}", addr);
         let channels = channels.clone();
-        let ports = ports.clone();
         let span = tracing::span!(tracing::Level::INFO, "session", addr=%addr,);
-        let host_info = host_info.clone();
+        let voice_server = voice_server.clone();
         tokio::spawn(
             async move {
-                if let Err(e) = handle_session(inc, channels, ports, host_info).await {
+                if let Err(e) = handle_session(inc, channels, voice_server).await {
                     tracing::warn!("session ended with error: {}", e);
                 } else {
                     tracing::info!("session ended");
@@ -80,10 +85,9 @@ async fn main_() -> anyhow::Result<()> {
 async fn handle_session(
     inc: TcpStream,
     channels: Channels,
-    ports: Ports,
-    host_info: UdpHostInfo,
+    voice_server: VoiceServer,
 ) -> anyhow::Result<()> {
-    ServerSession::init(inc, ports, channels, host_info)
+    ServerSession::init(inc, voice_server, channels)
         .await?
         .run_session()
         .await?;

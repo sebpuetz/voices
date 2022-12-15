@@ -4,10 +4,12 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use crate::voice::Voice;
+use voice_proto::Voice;
 
-use super::voice::ClientInfo;
+use crate::ClientInfo;
 
+
+/// In-memory representation of channels
 #[derive(Default, Clone)]
 pub struct Channels {
     inner: Arc<RwLock<HashMap<Uuid, Chatroom>>>,
@@ -19,7 +21,7 @@ impl Channels {
             inner: Arc::default(),
         }
     }
-
+    
     pub fn get_or_create(&self, id: Uuid) -> Chatroom {
         if let Some(room) = self.inner.read().unwrap().get(&id) {
             return room.clone();
@@ -30,6 +32,10 @@ impl Channels {
     }
 }
 
+/// Chatroom representation
+/// 
+/// Offers a broadcast sender for channel events, a list of present users by ID and a voice sender
+// TODO: separate Chatroom representation and voice package delivery
 #[derive(Clone)]
 pub struct Chatroom {
     room_id: Uuid,

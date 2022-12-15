@@ -1,9 +1,10 @@
 use cpal::platform::AlsaStream as Stream;
 use cpal::traits::{HostTrait, StreamTrait};
-// use crossbeam::channel::Sender;
 use rodio::DeviceTrait;
 
 use crate::udp::RecordTx;
+
+// TODO: opus enc
 
 pub fn record(mut tx: RecordTx) -> anyhow::Result<Stream> {
     let host = cpal::platform::AlsaHost::new()?;

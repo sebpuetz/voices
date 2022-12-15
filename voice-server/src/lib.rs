@@ -1,13 +1,49 @@
-use std::net::{Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
+use channel::Chatroom;
+use ports::PortRef;
+use tokio::net::UdpSocket;
 use tokio::sync::{broadcast, mpsc};
 use udp_proto::UdpWithBuf;
 use uuid::Uuid;
+use voice_proto::*;
 
-use crate::{ports::PortRef, voice::*};
+pub mod channel;
+mod ports;
+pub use ports::Ports;
 
-use super::channel::Chatroom;
+#[derive(Clone)]
+pub struct VoiceServer {
+    host_addr: IpAddr,
+    ports: Ports,
+}
+
+impl VoiceServer {
+    pub fn new(host_addr: IpAddr, ports: Ports) -> Self {
+        Self { host_addr, ports }
+    }
+
+    pub async fn connection(
+        &self,
+        client_id: Uuid,
+        client_name: String,
+        chatroom: Chatroom,
+    ) -> Result<(VoiceConnection, VoiceControl), SetupError> {
+        let port = self.ports.get().ok_or(SetupError::NoOpenPorts)?;
+        VoiceConnection::new(client_id, client_name, chatroom, port, self.host_addr)
+            .await
+            .map_err(Into::into)
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum SetupError {
+    #[error("no remaining udp ports")]
+    NoOpenPorts,
+    #[error(transparent)]
+    UdpError(#[from] std::io::Error),
+}
 
 #[derive(Debug)]
 pub struct InitMessage {
@@ -15,36 +51,37 @@ pub struct InitMessage {
 }
 
 #[derive(Debug)]
-pub enum ControlMessage {
+pub enum VoiceControlMessage {
     Init(InitMessage),
     Stop,
 }
 
-pub struct ControlChannel(mpsc::Sender<ControlMessage>);
+pub struct VoiceControl(mpsc::Sender<VoiceControlMessage>);
 
-impl ControlChannel {
+impl VoiceControl {
     pub async fn init(
         &self,
         client_udp: SocketAddr,
-    ) -> Result<(), mpsc::error::SendError<ControlMessage>> {
+    ) -> Result<(), mpsc::error::SendError<VoiceControlMessage>> {
         self.0
-            .send(ControlMessage::Init(InitMessage {
+            .send(VoiceControlMessage::Init(InitMessage {
                 client_addr: client_udp,
             }))
             .await
     }
 
-    pub async fn stop(&self) -> Result<(), mpsc::error::SendError<ControlMessage>> {
-        self.0.send(ControlMessage::Stop).await
+    pub async fn stop(&self) -> Result<(), mpsc::error::SendError<VoiceControlMessage>> {
+        self.0.send(VoiceControlMessage::Stop).await
     }
 }
 
 pub struct VoiceConnection {
     chatroom: Chatroom,
     udp: UdpWithBuf,
+    udp_addr: SocketAddr,
     client_info: ClientInfo,
-    control_chan: mpsc::Receiver<ControlMessage>,
-    _port_ref: PortRef,
+    control_chan: mpsc::Receiver<VoiceControlMessage>,
+    _port: PortRef,
 }
 
 #[derive(Clone, Debug)]
@@ -60,8 +97,10 @@ impl VoiceConnection {
         client_name: String,
         chatroom: Chatroom,
         port: PortRef,
-    ) -> anyhow::Result<(Self, ControlChannel)> {
-        let udp = UdpWithBuf::bind(SocketAddr::from((Ipv6Addr::UNSPECIFIED, port.port))).await?;
+        host_addr: IpAddr,
+    ) -> Result<(Self, VoiceControl), SetupError> {
+        let sock = UdpSocket::bind(SocketAddr::from((Ipv6Addr::UNSPECIFIED, port.port))).await?;
+        let udp = UdpWithBuf::new(sock);
         let (tx, rx) = mpsc::channel(10);
         let source_id = rand::random();
         let client_info = ClientInfo {
@@ -73,11 +112,12 @@ impl VoiceConnection {
             VoiceConnection {
                 chatroom,
                 udp,
+                udp_addr: SocketAddr::from((host_addr, port.port)),
                 client_info,
                 control_chan: rx,
-                _port_ref: port,
+                _port: port,
             },
-            ControlChannel(tx),
+            VoiceControl(tx),
         ))
     }
 
@@ -87,6 +127,10 @@ impl VoiceConnection {
 
     pub fn source_id(&self) -> u32 {
         self.client_info.source_id
+    }
+
+    pub fn udp_addr(&self) -> SocketAddr {
+        self.udp_addr
     }
 
     #[tracing::instrument(name="voice_run", skip(self), fields(source_id=%self.source_id()))]
@@ -109,13 +153,13 @@ impl VoiceConnection {
                 },
                 addr = self.control_chan.recv() => {
                     match addr {
-                        Some(ControlMessage::Init(init_msg)) => {
+                        Some(VoiceControlMessage::Init(init_msg)) => {
                             tracing::info!("Peering {}", init_msg.client_addr);
                             if let Err(e) = self.peered(init_msg.client_addr).await {
                                 tracing::error!("{}", e);
                             }
                         },
-                        Some(ControlMessage::Stop) => {
+                        Some(VoiceControlMessage::Stop) => {
                             tracing::info!("received stop signal");
                             return;
                         },
@@ -184,12 +228,13 @@ impl VoiceConnection {
                 },
                 recv = channel_handle.recv() => {
                     match recv {
-                        Ok((pkt_id, voice)) => {
-                            tracing::trace!("{} {}", id, pkt_id);
-                            if source_id == pkt_id {
+                        // FIXME: rx_pkt_id is used to filter our own messages, would be nicer to filter that elsewhere
+                        Ok((rx_pkt_id, voice)) => {
+                            tracing::trace!("{} {}", id, rx_pkt_id);
+                            if source_id == rx_pkt_id {
                                 continue;
                             }
-                            let voice = ServerMessage::voice(voice, pkt_id);
+                            let voice = ServerMessage::voice(voice, rx_pkt_id);
                             self.udp.send(&voice).await?;
                             sent += 1;
                         },
@@ -203,7 +248,7 @@ impl VoiceConnection {
                     }
                 }
                 ctl = self.control_chan.recv() => {
-                    if matches!(ctl, None | Some(ControlMessage::Stop)) {
+                    if matches!(ctl, None | Some(VoiceControlMessage::Stop)) {
                         tracing::info!("stop reading from udp");
                         return Ok(())
                     }
@@ -213,6 +258,7 @@ impl VoiceConnection {
     }
 }
 
+// FIXME: probably obsolete with opus?
 pub struct SampleRateChecker {
     interval: Duration,
     last: Instant,
@@ -244,23 +290,5 @@ impl SampleRateChecker {
             self.last = Instant::now();
         }
         None
-    }
-}
-
-impl ServerMessage {
-    pub fn new(msg: server_message::Message) -> Self {
-        ServerMessage { message: Some(msg) }
-    }
-
-    pub fn pong(pong: Pong) -> Self {
-        ServerMessage::new(server_message::Message::Pong(pong))
-    }
-
-    pub fn voice(voice: Voice, src_id: u32) -> Self {
-        ServerMessage::new(server_message::Message::Voice(ServerVoice {
-            sequence: voice.sequence,
-            source_id: src_id,
-            payload: voice.payload,
-        }))
     }
 }
