@@ -51,7 +51,7 @@ impl UdpSetup {
     }
 
     #[tracing::instrument(skip_all, fields(source_id=src_id))]
-    pub fn run(self, src_id: u32, deaf: bool) -> VoiceEventTx {
+    pub fn run(self, src_id: u32, deaf: bool, mute: bool) -> VoiceEventTx {
         let received = Arc::new(AtomicU64::new(0));
         let set_received = received.clone();
         let get_received = received;
@@ -65,7 +65,7 @@ impl UdpSetup {
         tokio::spawn(async move {
             let (tx, rx) = RecordTx::new();
             let _stream = mic::record(tx).expect("oof");
-            if let Err(e) = udp_tx(self.sock, rx, get_received).await {
+            if let Err(e) = udp_tx(self.sock, rx, get_received, mute).await {
                 tracing::error!("udp tx dead: {}", e)
             }
         });
@@ -127,7 +127,7 @@ impl RecordTx {
         let (tx, rx) = mpsc::channel(10);
         let rx = RecordRx { rx };
         let opus = audiopus::coder::Encoder::new(
-            audiopus::SampleRate::Hz16000,
+            audiopus::SampleRate::Hz48000,
             audiopus::Channels::Mono,
             audiopus::Application::Voip,
         )
@@ -144,10 +144,10 @@ impl RecordTx {
 
     pub fn send(&mut self, voice: &[i16]) -> Result<(), ()> {
         self.buf.extend_from_slice(voice);
-        while self.buf.len() >= (16000 / 50) {
-            let mut voice = self.buf.split_off(16000 / 50);
+        while self.buf.len() >= (48000 / 50) {
+            let mut voice = self.buf.split_off(48000 / 50);
             std::mem::swap(&mut voice, &mut self.buf);
-            let mut out = vec![0; 1000];
+            let mut out = vec![0; 500];
             let written = self.opus.encode(&voice, &mut out).unwrap();
             out.truncate(written);
             self.tx.blocking_send(out).expect("FIXME error");
@@ -160,6 +160,7 @@ pub async fn udp_tx(
     mut sock: UdpWithBuf,
     mut voice_recv: RecordRx,
     get_received: Arc<AtomicU64>,
+    mute: bool,
 ) -> anyhow::Result<()> {
     let mut deadline = Instant::now();
     let keepalive_interval = Duration::from_secs(1);
@@ -177,8 +178,10 @@ pub async fn udp_tx(
                         payload: voice,
                         sequence: sequence as _,
                     };
-                    let voice = ClientMessage::voice(payload);
-                    sock.send(&voice).await.expect("oops");
+                    if !mute {
+                        let voice = ClientMessage::voice(payload);
+                        sock.send(&voice).await.expect("oops");
+                    }
                 } else {
                     anyhow::bail!("mic dead")
                 }

@@ -15,7 +15,7 @@ pub fn record(mut tx: RecordTx) -> anyhow::Result<Stream> {
         .unwrap()
         .next()
         .unwrap()
-        .with_sample_rate(cpal::SampleRate(16000));
+        .with_sample_rate(cpal::SampleRate(48000));
     let err_fn = move |err| {
         tracing::error!("an error occurred on stream: {}", err);
     };
