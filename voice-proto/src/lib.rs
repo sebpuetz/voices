@@ -1,5 +1,7 @@
 #[allow(clippy::all)]
-mod voice;
+pub mod voice {
+    include!(concat!(env!("OUT_DIR"), "/voice.rs"));
+}
 pub use voice::*;
 
 #[cfg(feature = "server")]
