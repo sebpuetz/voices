@@ -202,7 +202,7 @@ impl VoiceConnection {
         let mut channel_handle = self.chatroom.join(self.client_info);
         let id = channel_handle.id();
         let mut sent = 0;
-        let mut checker = SampleRateChecker::new(Duration::from_secs(5));
+        // let mut checker = SampleRateChecker::new(Duration::from_secs(5));
         loop {
             tokio::select! {
                 udp_pkt = self.udp.recv::<ClientMessage>() => {
@@ -210,10 +210,10 @@ impl VoiceConnection {
                         Ok(msg) => {
                             match msg.payload {
                                 Some(client_message::Payload::Voice(voice)) => {
-                                    if let Some(bad_rate) = checker.check(voice.payload.len()) {
-                                        tracing::warn!("Bad sample rate: {}", bad_rate);
-                                        return Ok(())
-                                    }
+                                    // if let Some(bad_rate) = checker.check(voice.payload.len()) {
+                                    //     tracing::warn!("Bad sample rate: {}", bad_rate);
+                                    //     return Ok(())
+                                    // }
                                     let _ = channel_handle.send(voice);
                                 },
                                 Some(client_message::Payload::Ping(ping)) => {

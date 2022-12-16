@@ -23,20 +23,19 @@ impl<I> PcmI16<I> {
 
 impl<I> Iterator for PcmI16<I>
 where
-    I: Iterator<Item = u8>,
+    I: Iterator<Item = i16>,
 {
     type Item = i16;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.samples
-            .next()
-            .and_then(|a| self.samples.next().map(|b| i16::from_be_bytes([a, b])))
+        self.samples.next()
+        // .and_then(|a| self.samples.next().map(|b| i16::from_be_bytes([a, b])))
     }
 }
 
 impl<I> rodio::Source for PcmI16<I>
 where
-    I: Iterator<Item = u8>,
+    I: Iterator<Item = i16>,
 {
     fn current_frame_len(&self) -> Option<usize> {
         Some(self.len)
@@ -183,12 +182,25 @@ pub async fn play(
 async fn play_stream(tx: Arc<SourcesQueueInput<i16>>, mut stream: PlayRx) {
     tracing::debug!("Started play stream");
     let mut state = State::new();
+    let mut decoder =
+        audiopus::coder::Decoder::new(audiopus::SampleRate::Hz16000, audiopus::Channels::Mono)
+            .unwrap();
     while let Some(pack) = stream.recv().await {
-        // tracing::debug!("received voice");
         if state.push(pack) {
-            let (len, chunk) = state.drain();
-            let src = PcmI16::new(chunk, len / 2);
-            tx.append(src);
+            let mut buf = vec![0; 1024 * 16];
+            let chunks = state.drain();
+            for chunk in chunks {
+                let input = (&chunk.payload).try_into().unwrap();
+                let n_samples = {
+                    let output = (&mut buf).try_into().unwrap();
+                    let n_samples = decoder.decode(Some(input), output, false).unwrap();
+                    n_samples
+                };
+                let mut samples = buf.split_off(n_samples);
+                std::mem::swap(&mut buf, &mut samples);
+                let src = PcmI16::new(samples.into_iter(), n_samples);
+                tx.append(src);
+            }
         }
     }
     tracing::debug!("stream ended");
@@ -240,17 +252,17 @@ impl State {
         self.queue.clear();
     }
 
-    fn drain(&mut self) -> (usize, impl Iterator<Item = u8> + 'static) {
+    fn drain(&mut self) -> Vec<ServerVoice> {
         self.queue.sort_by(|v1, v2| v1.sequence.cmp(&v2.sequence));
         if let Some(last) = self.queue.last() {
             self.seq_cutoff = last.sequence;
         }
+
         let mut out = Vec::with_capacity(10);
         std::mem::swap(&mut out, &mut self.queue);
         self.start = Instant::now();
-        let len = self.n_bytes;
         self.n_bytes = 0;
-        (len, out.into_iter().flat_map(|v| v.payload.into_iter()))
+        out
     }
 }
 
