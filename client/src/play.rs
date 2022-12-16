@@ -46,7 +46,7 @@ where
     }
 
     fn sample_rate(&self) -> u32 {
-        16000
+        48000
     }
 
     fn total_duration(&self) -> Option<Duration> {
@@ -75,7 +75,7 @@ impl Player {
 
     fn sink_thread(rx: mpsc::Receiver<PlayerEvent>) {
         let (_stream, stream_handle) = OutputStream::try_default().unwrap();
-        let (ctl, mixer) = rodio::dynamic_mixer::mixer::<i16>(1, 16000);
+        let (ctl, mixer) = rodio::dynamic_mixer::mixer::<i16>(1, 48000);
         let sink = rodio::Sink::try_new(&stream_handle).unwrap();
         let (notify_tx, notify_src) = rodio::queue::queue(true);
         ctl.add(notify_src);
@@ -183,11 +183,11 @@ async fn play_stream(tx: Arc<SourcesQueueInput<i16>>, mut stream: PlayRx) {
     tracing::debug!("Started play stream");
     let mut state = State::new();
     let mut decoder =
-        audiopus::coder::Decoder::new(audiopus::SampleRate::Hz16000, audiopus::Channels::Mono)
+        audiopus::coder::Decoder::new(audiopus::SampleRate::Hz48000, audiopus::Channels::Mono)
             .unwrap();
+    let mut buf = vec![0; 1024 * 16];
     while let Some(pack) = stream.recv().await {
         if state.push(pack) {
-            let mut buf = vec![0; 1024 * 16];
             let chunks = state.drain();
             for chunk in chunks {
                 let input = (&chunk.payload).try_into().unwrap();
@@ -201,6 +201,7 @@ async fn play_stream(tx: Arc<SourcesQueueInput<i16>>, mut stream: PlayRx) {
                 let src = PcmI16::new(samples.into_iter(), n_samples);
                 tx.append(src);
             }
+            buf.resize(1024 * 16, 0);
         }
     }
     tracing::debug!("stream ended");
