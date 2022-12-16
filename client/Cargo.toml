@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.58"
+audiopus = "0.3.0-rc.0"
 byteorder = "1"
 clap = { version = "3.2.17", features = ["derive"] }
 cpal = "0.13.5"

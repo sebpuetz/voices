@@ -9,8 +9,8 @@ use tokio::select;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Instant};
 use udp_proto::{UdpError, UdpWithBuf};
-use voice_proto::*;
 use uuid::Uuid;
+use voice_proto::*;
 
 use crate::play::{PlayTx, Player};
 use crate::{mic, play};
@@ -119,16 +119,24 @@ pub struct RecordRx {
 pub struct RecordTx {
     tx: mpsc::Sender<Vec<u8>>,
     buf: Vec<i16>,
+    opus: audiopus::coder::Encoder,
 }
 
 impl RecordTx {
     pub fn new() -> (Self, RecordRx) {
         let (tx, rx) = mpsc::channel(10);
         let rx = RecordRx { rx };
+        let opus = audiopus::coder::Encoder::new(
+            audiopus::SampleRate::Hz16000,
+            audiopus::Channels::Mono,
+            audiopus::Application::Voip,
+        )
+        .expect("rip");
         (
             Self {
                 tx,
                 buf: Vec::with_capacity(std::mem::size_of::<i16>() * 16000),
+                opus,
             },
             rx,
         )
@@ -136,12 +144,13 @@ impl RecordTx {
 
     pub fn send(&mut self, voice: &[i16]) -> Result<(), ()> {
         self.buf.extend_from_slice(voice);
-        while !self.buf.is_empty() {
-            let lim = std::cmp::min(self.buf.len(), 700);
-            let mut chunk = self.buf.split_off(lim);
-            std::mem::swap(&mut chunk, &mut self.buf);
-            let chunk = chunk.into_iter().flat_map(|s| s.to_be_bytes()).collect();
-            self.tx.blocking_send(chunk).expect("FIXME error");
+        while self.buf.len() >= (16000 / 50) {
+            let mut voice = self.buf.split_off(16000 / 50);
+            std::mem::swap(&mut voice, &mut self.buf);
+            let mut out = vec![0; 1000];
+            let written = self.opus.encode(&voice, &mut out).unwrap();
+            out.truncate(written);
+            self.tx.blocking_send(out).expect("FIXME error");
         }
         Ok(())
     }
