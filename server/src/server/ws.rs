@@ -76,12 +76,14 @@ impl ControlStream {
         &self,
         sess_id: Uuid,
         src_id: u32,
+        start_seq_num: u64,
         present: Vec<Present>,
     ) -> Result<(), ControlStreamError> {
         self.send(ServerEvent::Ready(Ready {
             id: sess_id,
             src_id,
             present,
+            seq_num: start_seq_num,
         }))
         .await
     }

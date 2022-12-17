@@ -138,6 +138,7 @@ impl ServerSession {
                 let room_ = room.clone();
                 if let Some(voice) = self.initialize_voice_connection(room).await? {
                     let src_id = voice.source_id;
+                    let start_seq_num = voice.start_seq_num;
                     self.voice = Some(voice);
                     let present = room_
                         .list()
@@ -149,7 +150,9 @@ impl ServerSession {
                             })
                         })
                         .collect();
-                    self.ctl.voice_ready(room_id, src_id, present).await?;
+                    self.ctl
+                        .voice_ready(room_id, src_id, start_seq_num, present)
+                        .await?;
                 } else {
                     self.ctl.join_error(room_id).await?;
                 }
@@ -204,6 +207,7 @@ impl ServerSession {
             Err(e) => return Err(e.into()),
         };
         let source_id = voice.source_id();
+        let start_seq_num = voice.init_seq_num();
 
         let udp_addr = voice.udp_addr();
         tracing::debug!("udp running on {:?}", udp_addr);
@@ -224,6 +228,7 @@ impl ServerSession {
             ctl_tx,
             updates: room2.updates(),
             source_id,
+            start_seq_num,
         }))
     }
 }
@@ -235,6 +240,7 @@ pub struct VoiceHandle {
     ctl_tx: VoiceControl,
     updates: broadcast::Receiver<ChannelEvent>,
     source_id: u32,
+    start_seq_num: u64,
 }
 
 impl Future for VoiceHandle {

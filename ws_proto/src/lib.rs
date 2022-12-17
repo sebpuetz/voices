@@ -61,6 +61,7 @@ pub enum ServerEvent {
 pub struct Ready {
     pub id: Uuid,
     pub src_id: u32,
+    pub seq_num: u64,
     pub present: Vec<Present>,
 }
 

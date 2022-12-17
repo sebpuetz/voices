@@ -8,7 +8,6 @@ use voice_proto::Voice;
 
 use crate::ClientInfo;
 
-
 /// In-memory representation of channels
 #[derive(Default, Clone)]
 pub struct Channels {
@@ -21,7 +20,7 @@ impl Channels {
             inner: Arc::default(),
         }
     }
-    
+
     pub fn get_or_create(&self, id: Uuid) -> Chatroom {
         if let Some(room) = self.inner.read().unwrap().get(&id) {
             return room.clone();
@@ -33,7 +32,7 @@ impl Channels {
 }
 
 /// Chatroom representation
-/// 
+///
 /// Offers a broadcast sender for channel events, a list of present users by ID and a voice sender
 // TODO: separate Chatroom representation and voice package delivery
 #[derive(Clone)]

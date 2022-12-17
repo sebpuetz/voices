@@ -33,8 +33,9 @@ impl UdpSetup {
     #[tracing::instrument(skip_all)]
     pub async fn discover_ip(&mut self) -> Result<SocketAddr, SetupError> {
         tracing::debug!("start ip discovery");
+
         let req = IpDiscoveryRequest {
-            uuid: self.user_id.as_bytes().to_vec(),
+            uuid: bytes::Bytes::copy_from_slice(self.user_id.as_bytes()),
         };
         self.sock.send(&req).await?;
 
@@ -51,21 +52,26 @@ impl UdpSetup {
     }
 
     #[tracing::instrument(skip_all, fields(source_id=src_id))]
-    pub fn run(self, src_id: u32, deaf: bool, mute: bool) -> VoiceEventTx {
+    pub fn run(self, src_id: u32, start_seq_num: u64, deaf: bool, mute: bool) -> VoiceEventTx {
         let received = Arc::new(AtomicU64::new(0));
         let set_received = received.clone();
         let get_received = received;
+        let sent = Arc::new(AtomicU64::new(0));
+        let get_sent = sent.clone();
+        let set_sent = sent;
+
         let sock2 = self.sock.clone();
         let (voice_event_tx, voice_event_rx) = mpsc::channel(10);
         tokio::spawn(async move {
-            if let Err(e) = udp_rx(sock2, set_received, voice_event_rx, deaf).await {
+            if let Err(e) = udp_rx(sock2, set_received, get_sent, voice_event_rx, deaf).await {
                 tracing::error!("udp rx dead: {}", e)
             }
         });
         tokio::spawn(async move {
-            let (tx, rx) = RecordTx::new();
+            let (tx, rx) = RecordTx::new().expect("FIXME");
             let _stream = mic::record(tx).expect("oof");
-            if let Err(e) = udp_tx(self.sock, rx, get_received, mute).await {
+            if let Err(e) = udp_tx(self.sock, rx, get_received, set_sent, mute, start_seq_num).await
+            {
                 tracing::error!("udp tx dead: {}", e)
             }
         });
@@ -123,35 +129,42 @@ pub struct RecordTx {
 }
 
 impl RecordTx {
-    pub fn new() -> (Self, RecordRx) {
+    pub fn new() -> anyhow::Result<(Self, RecordRx)> {
         let (tx, rx) = mpsc::channel(10);
         let rx = RecordRx { rx };
         let opus = audiopus::coder::Encoder::new(
             audiopus::SampleRate::Hz48000,
             audiopus::Channels::Mono,
             audiopus::Application::Voip,
-        )
-        .expect("rip");
-        (
+        )?;
+        Ok((
             Self {
                 tx,
-                buf: Vec::with_capacity(std::mem::size_of::<i16>() * 16000),
+                buf: Vec::with_capacity(std::mem::size_of::<i16>() * 8000),
                 opus,
             },
             rx,
-        )
+        ))
     }
 
-    pub fn send(&mut self, voice: &[i16]) -> Result<(), ()> {
+    pub fn send(&mut self, voice: &[i16]) -> anyhow::Result<()> {
         self.buf.extend_from_slice(voice);
-        while self.buf.len() >= (48000 / 50) {
-            let mut voice = self.buf.split_off(48000 / 50);
-            std::mem::swap(&mut voice, &mut self.buf);
+        const TWENTY_MS: usize = 48000 / 50;
+        let chunks = self.buf.chunks_exact(TWENTY_MS);
+        let rem = chunks.remainder();
+        for chunk in chunks {
             let mut out = vec![0; 500];
-            let written = self.opus.encode(&voice, &mut out).unwrap();
+            let written = self.opus.encode(chunk, &mut out).unwrap();
             out.truncate(written);
-            self.tx.blocking_send(out).expect("FIXME error");
+            self.tx
+                .blocking_send(out)
+                .map_err(|_| anyhow::anyhow!("failed to send encoded chunk"))?;
         }
+        let rem_len = rem.len();
+        let start = self.buf.len() - rem_len;
+        let src = start..self.buf.len();
+        self.buf.copy_within(src, 0);
+        self.buf.truncate(rem_len);
         Ok(())
     }
 }
@@ -160,27 +173,27 @@ pub async fn udp_tx(
     mut sock: UdpWithBuf,
     mut voice_recv: RecordRx,
     get_received: Arc<AtomicU64>,
+    set_sent: Arc<AtomicU64>,
     mute: bool,
+    start_seq_num: u64,
 ) -> anyhow::Result<()> {
     let mut deadline = Instant::now();
-    let keepalive_interval = Duration::from_secs(1);
+    let keepalive_interval = Duration::from_secs(5);
     deadline += keepalive_interval;
+    let mut sequence = start_seq_num;
     loop {
         let sleep_until = tokio::time::sleep_until(deadline);
         select! {
             voice = voice_recv.rx.recv() => {
                 if let Some(voice) = voice {
-                    let sequence = SystemTime::now()
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis();
                     let payload = Voice {
-                        payload: voice,
+                        payload: voice.into(),
                         sequence: sequence as _,
                     };
                     if !mute {
                         let voice = ClientMessage::voice(payload);
-                        sock.send(&voice).await.expect("oops");
+                        sock.send(&voice).await?;
+                        sequence = sequence.wrapping_add(1);
                     }
                 } else {
                     anyhow::bail!("mic dead")
@@ -191,11 +204,13 @@ pub async fn udp_tx(
                     .duration_since(SystemTime::UNIX_EPOCH)?
                     .as_millis();
                 let recv = get_received.load(std::sync::atomic::Ordering::SeqCst);
+                let sent = set_sent.swap(sequence.wrapping_sub(start_seq_num), std::sync::atomic::Ordering::SeqCst);
                 let ping = ClientMessage::ping(Ping {
                     seq: seq as _,
                     recv,
+                    sent,
                 });
-                sock.send(&ping).await.expect("oops");
+                sock.send(&ping).await?;
                 deadline += keepalive_interval;
             }
         }
@@ -253,6 +268,7 @@ impl ReceiverState {
 pub async fn udp_rx(
     mut sock: UdpWithBuf,
     set_received: Arc<AtomicU64>,
+    get_sent: Arc<AtomicU64>,
     mut voice_event_rx: mpsc::Receiver<VoiceEvent>,
     deaf: bool,
 ) -> anyhow::Result<()> {
@@ -308,12 +324,16 @@ pub async fn udp_rx(
             } => {
                 let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?;
                 let received = set_received.load(std::sync::atomic::Ordering::SeqCst);
-                let expected = pong.sent;
+                let expected_received = pong.sent;
+                let sent = get_sent.load(std::sync::atomic::Ordering::Relaxed);
+                let expected_sent = pong.received;
                 tracing::debug!(
-                    "Pong: {}, received: {}, expected: {}",
-                    (now - Duration::from_millis(pong.seq)).as_millis(),
                     received,
-                    expected
+                    expected_received,
+                    sent,
+                    expected_sent,
+                    "Pong: {}ms",
+                    (now - Duration::from_millis(pong.seq)).as_millis(),
                 );
             }
             ServerMessage { message: None } => {

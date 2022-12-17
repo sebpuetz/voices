@@ -73,7 +73,7 @@ async fn async_main_() -> anyhow::Result<()> {
     }
     let ready = stream.await_ready().await?;
     tracing::info!("{:?}", ready);
-    let voice_event_tx = udp.run(ready.src_id, config.deaf, config.mute);
+    let voice_event_tx = udp.run(ready.src_id, ready.seq_num, config.deaf, config.mute);
     for user in ready.present {
         tracing::info!("{:?}", user);
         voice_event_tx.already_present(user.source_id).await;

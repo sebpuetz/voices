@@ -38,7 +38,7 @@ where
     I: Iterator<Item = i16>,
 {
     fn current_frame_len(&self) -> Option<usize> {
-        Some(self.len)
+        Some(self.len / self.channels() as usize)
     }
 
     fn channels(&self) -> u16 {
@@ -50,9 +50,7 @@ where
     }
 
     fn total_duration(&self) -> Option<Duration> {
-        let micros = (self.len * 1_000_000) / (self.sample_rate() as usize * 1_000_000);
-        println!("{:?}", Duration::from_micros(micros as u64));
-        Some(Duration::from_micros(micros as u64))
+        None
     }
 }
 
@@ -81,6 +79,7 @@ impl Player {
         ctl.add(notify_src);
         sink.append(mixer);
         let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
             .build()
             .unwrap();
         let localset = tokio::task::LocalSet::new();
@@ -153,7 +152,11 @@ pub async fn play(
                 tracing::debug!("Received play stream");
                 let (tx, samples) = rodio::queue::queue(true);
                 ctl.add(samples);
-                tokio::task::spawn_local(play_stream(tx, joined));
+                tokio::task::spawn_local(async move {
+                    play_stream(tx, joined)
+                        .await
+                        .map_err(|e| tracing::warn!(error=?e, "play stream errored"))
+                });
                 quiet
             }
             PlayerEvent::Left { quiet } => quiet,
@@ -179,91 +182,168 @@ pub async fn play(
     tracing::debug!("play ended");
 }
 
-async fn play_stream(tx: Arc<SourcesQueueInput<i16>>, mut stream: PlayRx) {
+async fn play_stream(tx: Arc<SourcesQueueInput<i16>>, mut stream: PlayRx) -> anyhow::Result<()> {
     tracing::debug!("Started play stream");
     let mut state = State::new();
     let mut decoder =
-        audiopus::coder::Decoder::new(audiopus::SampleRate::Hz48000, audiopus::Channels::Mono)
-            .unwrap();
-    let mut buf = vec![0; 1024 * 16];
-    while let Some(pack) = stream.recv().await {
-        if state.push(pack) {
-            let chunks = state.drain();
-            for chunk in chunks {
-                let input = (&chunk.payload).try_into().unwrap();
-                let n_samples = {
-                    let output = (&mut buf).try_into().unwrap();
-                    let n_samples = decoder.decode(Some(input), output, false).unwrap();
-                    n_samples
+        audiopus::coder::Decoder::new(audiopus::SampleRate::Hz48000, audiopus::Channels::Mono)?;
+    loop {
+        let mut deadline = Instant::now();
+        deadline += Duration::from_millis(20);
+        tokio::select! {
+            biased;
+            msg = stream.recv() => {
+                let pack = match msg {
+                    Some(msg) => msg,
+                    None => break,
                 };
-                let mut samples = buf.split_off(n_samples);
-                std::mem::swap(&mut buf, &mut samples);
-                let src = PcmI16::new(samples.into_iter(), n_samples);
-                tx.append(src);
+                if let Some(voice) = state.push(pack) {
+                    decode_and_submit(Some(&voice.payload), &mut decoder, &tx);
+                }
             }
-            buf.resize(1024 * 16, 0);
+            // FIXME: deadline needs to depend on stream time
+            _ = tokio::time::sleep_until(deadline.into()) => {
+                let chunks = state.drain().into_iter().flatten();
+                for chunk in chunks {
+                    decode_and_submit(chunk.as_ref().map(|v| &*v.payload), &mut decoder, &tx);
+                }
+            }
         }
     }
     tracing::debug!("stream ended");
+    Ok(())
 }
 
+fn decode_and_submit(
+    payload: Option<&[u8]>,
+    decoder: &mut audiopus::coder::Decoder,
+    tx: &Arc<SourcesQueueInput<i16>>,
+) {
+    let mut pcm = vec![0; 960];
+    let input = payload.map(TryInto::try_into).transpose().unwrap();
+    let n_samples = {
+        let output = (&mut pcm).try_into().unwrap();
+        match decoder.decode(input, output, false) {
+            Ok(n_samples) => n_samples,
+            Err(err) => {
+                tracing::error!(?err);
+                return;
+            }
+        }
+    };
+    pcm.truncate(n_samples);
+    let src = PcmI16::new(pcm.into_iter(), n_samples);
+    tx.append(src);
+}
+
+#[derive(Debug)]
 struct State {
-    start: Instant,
     last: Instant,
     queue: Vec<ServerVoice>,
-    n_bytes: usize,
     seq_cutoff: u64,
 }
 
 impl State {
     fn new() -> Self {
         State {
-            start: Instant::now(),
             last: Instant::now(),
             queue: Vec::with_capacity(10),
-            n_bytes: 0,
             seq_cutoff: 0,
         }
     }
 }
 impl State {
-    fn push(&mut self, voice: ServerVoice) -> bool {
+    fn push(&mut self, voice: ServerVoice) -> Option<ServerVoice> {
+        if voice.sequence == self.seq_cutoff {
+            self.seq_cutoff = voice.sequence + 1;
+            self.last = Instant::now();
+            return Some(voice);
+        }
+
+        // FIXME: need to take stream timestamp into account when determining staleness...
+        let time_since_last = self.last.elapsed();
+        let stale = time_since_last > Duration::from_millis(100);
+        if stale {
+            tracing::warn!("clearing state after receiving 100ms later frame");
+            self.clear();
+        }
+
         if self.seq_cutoff > voice.sequence {
             tracing::warn!(
                 "dropping stale voice packet oldest ({}) dropped ({})",
                 self.seq_cutoff,
                 voice.sequence
             );
-        }
-        if self.last.elapsed() > Duration::from_millis(100) {
-            tracing::warn!("clearing state after receiving 100ms later frame");
-            self.clear();
-            self.n_bytes += voice.payload.len();
+        } else {
             self.queue.push(voice);
-            self.last = Instant::now();
-            return false;
         }
+
         self.last = Instant::now();
-        self.n_bytes += voice.payload.len();
-        self.queue.push(voice);
-        self.start.elapsed() > Duration::from_millis(50)
+        None
     }
 
     fn clear(&mut self) {
         self.queue.clear();
     }
 
-    fn drain(&mut self) -> Vec<ServerVoice> {
-        self.queue.sort_by(|v1, v2| v1.sequence.cmp(&v2.sequence));
-        if let Some(last) = self.queue.last() {
-            self.seq_cutoff = last.sequence;
-        }
+    fn drain(&mut self) -> Option<Buffered> {
+        if self.queue.len() >= 4 || self.last.elapsed() >= Duration::from_millis(80) {
+            self.queue.sort_by(|v1, v2| v1.sequence.cmp(&v2.sequence));
+            let cur_seq = self.seq_cutoff;
+            if let Some(last) = self.queue.last() {
+                self.seq_cutoff = last.sequence + 1;
+            }
 
-        let mut out = Vec::with_capacity(10);
-        std::mem::swap(&mut out, &mut self.queue);
-        self.start = Instant::now();
-        self.n_bytes = 0;
-        out
+            let mut out = Vec::with_capacity(10);
+            std::mem::swap(&mut out, &mut self.queue);
+            Some(Buffered::new(cur_seq, out))
+        } else {
+            None
+        }
+    }
+}
+
+pub struct Buffered {
+    cur_seq: u64,
+    ready: Option<ServerVoice>,
+    inner: std::vec::IntoIter<ServerVoice>,
+}
+
+impl std::fmt::Debug for Buffered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Buffered")
+            .field("cur_seq", &self.cur_seq)
+            .field("ready", &self.ready)
+            .finish()
+    }
+}
+
+impl Buffered {
+    pub fn new(cur_seq: u64, inner: Vec<ServerVoice>) -> Self {
+        Self {
+            cur_seq,
+            ready: None,
+            inner: inner.into_iter(),
+        }
+    }
+}
+
+impl Iterator for Buffered {
+    type Item = Option<ServerVoice>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let next = self.ready.take().or_else(|| self.inner.next())?;
+        if self.cur_seq == 0 {
+            self.cur_seq = next.sequence;
+        }
+        let it = if next.sequence == self.cur_seq {
+            Some(Some(next))
+        } else {
+            self.ready = Some(next);
+            Some(None)
+        };
+        self.cur_seq = self.cur_seq.wrapping_add(1);
+        it
     }
 }
 
