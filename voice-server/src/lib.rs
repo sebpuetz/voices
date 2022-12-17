@@ -81,6 +81,7 @@ pub struct VoiceConnection {
     udp_addr: SocketAddr,
     client_info: ClientInfo,
     control_chan: mpsc::Receiver<VoiceControlMessage>,
+    init_seq_num: u64,
     _port: PortRef,
 }
 
@@ -103,6 +104,7 @@ impl VoiceConnection {
         let udp = UdpWithBuf::new(sock);
         let (tx, rx) = mpsc::channel(10);
         let source_id = rand::random();
+        let seq_num = rand::random();
         let client_info = ClientInfo {
             client_id,
             source_id,
@@ -115,6 +117,7 @@ impl VoiceConnection {
                 udp_addr: SocketAddr::from((host_addr, port.port)),
                 client_info,
                 control_chan: rx,
+                init_seq_num: seq_num,
                 _port: port,
             },
             VoiceControl(tx),
@@ -123,6 +126,10 @@ impl VoiceConnection {
 
     pub fn client_id(&self) -> Uuid {
         self.client_info.client_id
+    }
+
+    pub fn init_seq_num(&self) -> u64 {
+        self.init_seq_num
     }
 
     pub fn source_id(&self) -> u32 {
@@ -199,10 +206,12 @@ impl VoiceConnection {
         self.udp.connect(addr).await?;
         tracing::info!("successfully peered with {addr}");
         let source_id = self.source_id();
+        let mut seq = self.init_seq_num();
         let mut channel_handle = self.chatroom.join(self.client_info);
         let id = channel_handle.id();
         let mut sent = 0;
-        // let mut checker = SampleRateChecker::new(Duration::from_secs(5));
+        let mut ping_deadline = Instant::now() + Duration::from_secs(15);
+        let mut received = 0;
         loop {
             tokio::select! {
                 udp_pkt = self.udp.recv::<ClientMessage>() => {
@@ -210,14 +219,19 @@ impl VoiceConnection {
                         Ok(msg) => {
                             match msg.payload {
                                 Some(client_message::Payload::Voice(voice)) => {
-                                    // if let Some(bad_rate) = checker.check(voice.payload.len()) {
-                                    //     tracing::warn!("Bad sample rate: {}", bad_rate);
-                                    //     return Ok(())
-                                    // }
+                                    received += 1;
+                                    if voice.sequence < seq {
+                                        tracing::debug!(seq, voice.sequence, "out of order voice");
+                                    }
+                                    seq = voice.sequence;
                                     let _ = channel_handle.send(voice);
                                 },
                                 Some(client_message::Payload::Ping(ping)) => {
-                                    let pong = ServerMessage::pong(Pong { seq: ping.seq, sent });
+                                    ping_deadline += Duration::from_secs(15);
+                                    // FIXME: stats are unreliable
+                                    let expected_received = seq.wrapping_sub(self.init_seq_num);
+                                    tracing::debug!(expected_received, received);
+                                    let pong = ServerMessage::pong(Pong { seq: ping.seq, sent, received });
                                     self.udp.send(&pong).await?;
                                 },
                                 None => todo!(),
@@ -247,6 +261,10 @@ impl VoiceConnection {
                         },
                     }
                 }
+                _ = tokio::time::sleep_until(ping_deadline.into()) => {
+                    tracing::warn!("keep alive elapsed");
+                    return Ok(())
+                },
                 ctl = self.control_chan.recv() => {
                     if matches!(ctl, None | Some(VoiceControlMessage::Stop)) {
                         tracing::info!("stop reading from udp");
@@ -259,36 +277,36 @@ impl VoiceConnection {
 }
 
 // FIXME: probably obsolete with opus?
-pub struct SampleRateChecker {
-    interval: Duration,
-    last: Instant,
-    n_bytes: usize,
-}
+// pub struct SampleRateChecker {
+//     interval: Duration,
+//     last: Instant,
+//     n_bytes: usize,
+// }
 
-impl SampleRateChecker {
-    pub fn new(interval: Duration) -> Self {
-        Self {
-            interval,
-            last: Instant::now(),
-            n_bytes: 0,
-        }
-    }
+// impl SampleRateChecker {
+//     pub fn new(interval: Duration) -> Self {
+//         Self {
+//             interval,
+//             last: Instant::now(),
+//             n_bytes: 0,
+//         }
+//     }
 
-    pub fn check(&mut self, read: usize) -> Option<usize> {
-        self.n_bytes += read;
-        let elapsed = self.last.elapsed();
-        if elapsed > self.interval {
-            let samples = self.n_bytes / 2;
-            let elapsed_ms = elapsed.as_millis() as usize;
-            let sec_factor = 1000. / elapsed_ms as f32;
-            let sample_rate = samples as f32 * sec_factor;
-            tracing::trace!("checking samplerate: {}", sample_rate);
-            if sample_rate > (16000. * 1.3) {
-                return Some(sample_rate as usize);
-            }
-            self.n_bytes = 0;
-            self.last = Instant::now();
-        }
-        None
-    }
-}
+//     pub fn check(&mut self, read: usize) -> Option<usize> {
+//         self.n_bytes += read;
+//         let elapsed = self.last.elapsed();
+//         if elapsed > self.interval {
+//             let samples = self.n_bytes / 2;
+//             let elapsed_ms = elapsed.as_millis() as usize;
+//             let sec_factor = 1000. / elapsed_ms as f32;
+//             let sample_rate = samples as f32 * sec_factor;
+//             tracing::trace!("checking samplerate: {}", sample_rate);
+//             if sample_rate > (16000. * 1.3) {
+//                 return Some(sample_rate as usize);
+//             }
+//             self.n_bytes = 0;
+//             self.last = Instant::now();
+//         }
+//         None
+//     }
+// }

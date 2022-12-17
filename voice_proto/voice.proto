@@ -24,11 +24,13 @@ message ServerVoice {
 message Ping {
     uint64 seq = 1;
     uint64 recv = 2;
+    uint64 sent = 3;
 }
 
 message Pong {
     uint64 seq = 1;
     uint64 sent = 2;
+    uint64 received = 3;
 }
 
 message ClientMessage {
