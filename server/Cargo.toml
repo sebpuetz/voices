@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.58"
+base64 = "0.20.0"
 byteorder = "1"
 bytes = "1.2.1"
 clap = { version = "3.2.17", features = ["derive"] }

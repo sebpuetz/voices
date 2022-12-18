@@ -12,13 +12,15 @@ message IpDiscoveryResponse {
 
 message Voice {
     uint64 sequence = 1;
-    bytes payload = 2;
+    uint64 stream_time = 2;
+    bytes payload = 3;
 }
 
 message ServerVoice {
     uint64 sequence = 1;
-    uint32 source_id = 2;
-    bytes payload = 3;
+    uint64 stream_time = 2;
+    uint32 source_id = 3;
+    bytes payload = 4;
 }
 
 message Ping {

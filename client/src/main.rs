@@ -1,3 +1,4 @@
+pub mod config;
 pub mod mic;
 mod play;
 mod udp;
@@ -9,25 +10,13 @@ use clap::Parser;
 use futures_util::FutureExt;
 use tracing_subscriber::prelude::*;
 use uuid::Uuid;
+use voices_crypto::xsalsa20poly1305;
+use ws_proto::*;
+use xsalsa20poly1305::KeyInit;
 
 use ws::ControlStream;
-use ws_proto::*;
 
-#[derive(Parser)] // requires `derive` feature
-#[clap(name = "voice-client")]
-#[clap(author, version, about, long_about = None)]
-struct Config {
-    #[clap(long, default_value = "ws://localhost:33332")]
-    ws_endpoint: String,
-    #[clap(long)]
-    room_id: Option<Uuid>,
-    #[clap(long, default_value = "Foo")]
-    name: String,
-    #[clap(long)]
-    deaf: bool,
-    #[clap(long)]
-    mute: bool,
-}
+use crate::config::Config;
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
@@ -72,8 +61,10 @@ async fn async_main_() -> anyhow::Result<()> {
         }
     }
     let ready = stream.await_ready().await?;
+    let key = base64::decode(ready.crypt_key.unsecure())?;
+    let cipher = xsalsa20poly1305::XSalsa20Poly1305::new_from_slice(&key)?;
     tracing::info!("{:?}", ready);
-    let voice_event_tx = udp.run(ready.src_id, ready.seq_num, config.deaf, config.mute);
+    let voice_event_tx = udp.run(ready.src_id, cipher, config.deaf, config.mute);
     for user in ready.present {
         tracing::info!("{:?}", user);
         voice_event_tx.already_present(user.source_id).await;
