@@ -17,6 +17,7 @@ impl ServerMessage {
     pub fn voice(voice: Voice, src_id: u32) -> Self {
         ServerMessage::new(server_message::Message::Voice(ServerVoice {
             sequence: voice.sequence,
+            stream_time: voice.stream_time,
             source_id: src_id,
             payload: voice.payload,
         }))

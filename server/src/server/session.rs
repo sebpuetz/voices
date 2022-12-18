@@ -135,24 +135,8 @@ impl ServerSession {
                 self.stop_voice().await;
                 let room = self.channels.get_or_create(channel_id);
                 let room_id = room.id();
-                let room_ = room.clone();
                 if let Some(voice) = self.initialize_voice_connection(room).await? {
-                    let src_id = voice.source_id;
-                    let start_seq_num = voice.start_seq_num;
                     self.voice = Some(voice);
-                    let present = room_
-                        .list()
-                        .into_iter()
-                        .filter_map(|v| {
-                            (v.source_id != src_id).then_some(Present {
-                                user: v.name,
-                                source_id: v.source_id,
-                            })
-                        })
-                        .collect();
-                    self.ctl
-                        .voice_ready(room_id, src_id, start_seq_num, present)
-                        .await?;
                 } else {
                     self.ctl.join_error(room_id).await?;
                 }
@@ -207,7 +191,7 @@ impl ServerSession {
             Err(e) => return Err(e.into()),
         };
         let source_id = voice.source_id();
-        let start_seq_num = voice.init_seq_num();
+        let crypt_key = base64::encode(voice.crypt_key()).into();
 
         let udp_addr = voice.udp_addr();
         tracing::debug!("udp running on {:?}", udp_addr);
@@ -222,13 +206,29 @@ impl ServerSession {
         tracing::debug!("received client udp addr {client_udp}");
         ctl_tx.init(client_udp).await?;
         tracing::debug!("successfully notified udp task");
+        let present = room2
+            .list()
+            .into_iter()
+            .filter_map(|v| {
+                (v.source_id != source_id).then_some(Present {
+                    user: v.name,
+                    source_id: v.source_id,
+                })
+            })
+            .collect();
+        let ready = ws_proto::Ready {
+            id: room_id,
+            src_id: source_id,
+            present,
+            crypt_key,
+        };
+        self.ctl.voice_ready(ready).await?;
         Ok(Some(VoiceHandle {
             room_id,
             handle: voice,
             ctl_tx,
             updates: room2.updates(),
             source_id,
-            start_seq_num,
         }))
     }
 }
@@ -240,7 +240,6 @@ pub struct VoiceHandle {
     ctl_tx: VoiceControl,
     updates: broadcast::Receiver<ChannelEvent>,
     source_id: u32,
-    start_seq_num: u64,
 }
 
 impl Future for VoiceHandle {

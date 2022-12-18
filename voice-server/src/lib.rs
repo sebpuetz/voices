@@ -3,11 +3,14 @@ use std::time::{Duration, Instant};
 
 use channel::Chatroom;
 use ports::PortRef;
+use rand::thread_rng;
 use tokio::net::UdpSocket;
 use tokio::sync::{broadcast, mpsc};
 use udp_proto::UdpWithBuf;
 use uuid::Uuid;
 use voice_proto::*;
+use voices_crypto::VoiceCrypto;
+use xsalsa20poly1305::{Key, KeyInit, XSalsa20Poly1305};
 
 pub mod channel;
 mod ports;
@@ -81,7 +84,7 @@ pub struct VoiceConnection {
     udp_addr: SocketAddr,
     client_info: ClientInfo,
     control_chan: mpsc::Receiver<VoiceControlMessage>,
-    init_seq_num: u64,
+    crypt_key: Key,
     _port: PortRef,
 }
 
@@ -104,7 +107,8 @@ impl VoiceConnection {
         let udp = UdpWithBuf::new(sock);
         let (tx, rx) = mpsc::channel(10);
         let source_id = rand::random();
-        let seq_num = rand::random();
+        let crypt_key = XSalsa20Poly1305::generate_key(&mut thread_rng());
+
         let client_info = ClientInfo {
             client_id,
             source_id,
@@ -117,7 +121,7 @@ impl VoiceConnection {
                 udp_addr: SocketAddr::from((host_addr, port.port)),
                 client_info,
                 control_chan: rx,
-                init_seq_num: seq_num,
+                crypt_key,
                 _port: port,
             },
             VoiceControl(tx),
@@ -126,10 +130,6 @@ impl VoiceConnection {
 
     pub fn client_id(&self) -> Uuid {
         self.client_info.client_id
-    }
-
-    pub fn init_seq_num(&self) -> u64 {
-        self.init_seq_num
     }
 
     pub fn source_id(&self) -> u32 {
@@ -205,8 +205,9 @@ impl VoiceConnection {
     async fn peered(mut self, addr: SocketAddr) -> anyhow::Result<()> {
         self.udp.connect(addr).await?;
         tracing::info!("successfully peered with {addr}");
+        let cipher = XSalsa20Poly1305::new(&self.crypt_key);
         let source_id = self.source_id();
-        let mut seq = self.init_seq_num();
+        let mut seq = 0;
         let mut channel_handle = self.chatroom.join(self.client_info);
         let id = channel_handle.id();
         let mut sent = 0;
@@ -218,7 +219,11 @@ impl VoiceConnection {
                     match udp_pkt {
                         Ok(msg) => {
                             match msg.payload {
-                                Some(client_message::Payload::Voice(voice)) => {
+                                Some(client_message::Payload::Voice(mut voice)) => {
+                                    cipher.decrypt(&mut voice.payload, voice.sequence, voice.stream_time).map_err(|e| {
+                                        tracing::error!(error=?e, "Failed to decrypt");
+                                        e
+                                    })?;
                                     received += 1;
                                     if voice.sequence < seq {
                                         tracing::debug!(seq, voice.sequence, "out of order voice");
@@ -229,12 +234,14 @@ impl VoiceConnection {
                                 Some(client_message::Payload::Ping(ping)) => {
                                     ping_deadline += Duration::from_secs(15);
                                     // FIXME: stats are unreliable
-                                    let expected_received = seq.wrapping_sub(self.init_seq_num);
-                                    tracing::debug!(expected_received, received);
+                                    tracing::debug!(seq, received);
                                     let pong = ServerMessage::pong(Pong { seq: ping.seq, sent, received });
                                     self.udp.send(&pong).await?;
                                 },
-                                None => todo!(),
+                                None => {
+                                    tracing::warn!("client didn't send payload");
+                                    return Ok(())
+                                },
                             }
                         }
                         Err(e) => return Err(e.into()),
@@ -243,11 +250,12 @@ impl VoiceConnection {
                 recv = channel_handle.recv() => {
                     match recv {
                         // FIXME: rx_pkt_id is used to filter our own messages, would be nicer to filter that elsewhere
-                        Ok((rx_pkt_id, voice)) => {
+                        Ok((rx_pkt_id, mut voice)) => {
                             tracing::trace!("{} {}", id, rx_pkt_id);
                             if source_id == rx_pkt_id {
                                 continue;
                             }
+                            cipher.encrypt(&mut voice.payload, voice.sequence, voice.stream_time)?;
                             let voice = ServerMessage::voice(voice, rx_pkt_id);
                             self.udp.send(&voice).await?;
                             sent += 1;
@@ -273,6 +281,10 @@ impl VoiceConnection {
                 }
             }
         }
+    }
+
+    pub fn crypt_key(&self) -> &[u8] {
+        &self.crypt_key
     }
 }
 

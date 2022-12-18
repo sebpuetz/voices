@@ -11,6 +11,8 @@ use tokio::time::{timeout, Instant};
 use udp_proto::{UdpError, UdpWithBuf};
 use uuid::Uuid;
 use voice_proto::*;
+use voices_crypto::xsalsa20poly1305::XSalsa20Poly1305;
+use voices_crypto::VoiceCrypto;
 
 use crate::play::{PlayTx, Player};
 use crate::{mic, play};
@@ -35,7 +37,7 @@ impl UdpSetup {
         tracing::debug!("start ip discovery");
 
         let req = IpDiscoveryRequest {
-            uuid: bytes::Bytes::copy_from_slice(self.user_id.as_bytes()),
+            uuid: self.user_id.as_bytes().to_vec(),
         };
         self.sock.send(&req).await?;
 
@@ -52,7 +54,13 @@ impl UdpSetup {
     }
 
     #[tracing::instrument(skip_all, fields(source_id=src_id))]
-    pub fn run(self, src_id: u32, start_seq_num: u64, deaf: bool, mute: bool) -> VoiceEventTx {
+    pub fn run(
+        self,
+        src_id: u32,
+        cipher: XSalsa20Poly1305,
+        deaf: bool,
+        mute: bool,
+    ) -> VoiceEventTx {
         let received = Arc::new(AtomicU64::new(0));
         let set_received = received.clone();
         let get_received = received;
@@ -62,15 +70,33 @@ impl UdpSetup {
 
         let sock2 = self.sock.clone();
         let (voice_event_tx, voice_event_rx) = mpsc::channel(10);
+        let cipher_rx = cipher.clone();
         tokio::spawn(async move {
-            if let Err(e) = udp_rx(sock2, set_received, get_sent, voice_event_rx, deaf).await {
+            if let Err(e) = udp_rx(
+                sock2,
+                set_received,
+                get_sent,
+                voice_event_rx,
+                deaf,
+                cipher_rx,
+            )
+            .await
+            {
                 tracing::error!("udp rx dead: {}", e)
             }
         });
         tokio::spawn(async move {
             let (tx, rx) = RecordTx::new().expect("FIXME");
             let _stream = mic::record(tx).expect("oof");
-            if let Err(e) = udp_tx(self.sock, rx, get_received, set_sent, mute, start_seq_num).await
+            if let Err(e) = udp_tx(
+                self.sock,
+                rx,
+                get_received,
+                set_sent,
+                mute,
+                cipher,
+            )
+            .await
             {
                 tracing::error!("udp tx dead: {}", e)
             }
@@ -175,25 +201,30 @@ pub async fn udp_tx(
     get_received: Arc<AtomicU64>,
     set_sent: Arc<AtomicU64>,
     mute: bool,
-    start_seq_num: u64,
+    cipher: XSalsa20Poly1305,
 ) -> anyhow::Result<()> {
     let mut deadline = Instant::now();
     let keepalive_interval = Duration::from_secs(5);
     deadline += keepalive_interval;
+    let start_seq_num = rand::random();
     let mut sequence = start_seq_num;
+    let mut stream_time = rand::random();
     loop {
         let sleep_until = tokio::time::sleep_until(deadline);
         select! {
             voice = voice_recv.rx.recv() => {
-                if let Some(voice) = voice {
-                    let payload = Voice {
-                        payload: voice.into(),
-                        sequence: sequence as _,
-                    };
+                if let Some(mut voice) = voice {
                     if !mute {
+                        cipher.encrypt(&mut voice, sequence, stream_time)?;
+                        let payload = Voice {
+                            payload: voice,
+                            sequence: sequence as _,
+                            stream_time,
+                        };
                         let voice = ClientMessage::voice(payload);
                         sock.send(&voice).await?;
                         sequence = sequence.wrapping_add(1);
+                        stream_time = stream_time.wrapping_add(960);
                     }
                 } else {
                     anyhow::bail!("mic dead")
@@ -271,6 +302,7 @@ pub async fn udp_rx(
     get_sent: Arc<AtomicU64>,
     mut voice_event_rx: mpsc::Receiver<VoiceEvent>,
     deaf: bool,
+    cipher: XSalsa20Poly1305,
 ) -> anyhow::Result<()> {
     let player = play::Player::new().await?;
 
@@ -314,8 +346,9 @@ pub async fn udp_rx(
         };
         match msg {
             ServerMessage {
-                message: Some(server_message::Message::Voice(voice)),
+                message: Some(server_message::Message::Voice(mut voice)),
             } => {
+                cipher.decrypt(&mut voice.payload, voice.sequence, voice.stream_time)?;
                 set_received.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 state.send(voice.source_id, voice);
             }

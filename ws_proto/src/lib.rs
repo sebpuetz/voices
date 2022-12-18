@@ -61,8 +61,9 @@ pub enum ServerEvent {
 pub struct Ready {
     pub id: Uuid,
     pub src_id: u32,
-    pub seq_num: u64,
     pub present: Vec<Present>,
+    // b64 encoded xsalsa20poly1305 key
+    pub crypt_key: secstr::SecUtf8,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
