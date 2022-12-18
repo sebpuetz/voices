@@ -1,4 +1,12 @@
+#[cfg(not(target_os = "windows"))]
 use cpal::platform::AlsaStream as Stream;
+#[cfg(not(target_os = "windows"))]
+use cpal::platform::AlsaHost as Host;
+#[cfg(target_os = "windows")]
+use cpal::platform::WasapiStream as Stream;
+#[cfg(target_os = "windows")]
+use cpal::platform::WasapiHost as Host;
+
 use cpal::traits::{HostTrait, StreamTrait};
 use cpal::StreamConfig;
 use rodio::DeviceTrait;
@@ -6,7 +14,7 @@ use rodio::DeviceTrait;
 use crate::udp::RecordTx;
 
 pub fn record(mut tx: RecordTx) -> anyhow::Result<Stream> {
-    let host = cpal::platform::AlsaHost::new()?;
+    let host = Host::new()?;
     let device = host.default_input_device().unwrap();
     tracing::info!("Input device: {}", device.name().unwrap());
     let config = device
