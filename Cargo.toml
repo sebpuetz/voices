@@ -1,2 +1,10 @@
 [workspace]
-members = ["./client", "./server", "./ws_proto", "./udp-proto", "./voice-proto", "./voice-server", "./voices-crypto"]
+members = [
+  "./client",
+  "./server",
+  "./ws_proto",
+  "./udp-proto",
+  "./voice-proto",
+  "./voice-server",
+  "./voices-crypto",
+]

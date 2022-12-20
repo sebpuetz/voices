@@ -32,4 +32,3 @@ ws_proto = { path = "../ws_proto" }
 voices-crypto = { path = "../voices-crypto" }
 voice-proto = { path = "../voice-proto", features = ["server"] }
 xsalsa20poly1305 = { version = "0.9.0", features = ["std"] }
-

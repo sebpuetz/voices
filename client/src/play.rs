@@ -4,45 +4,42 @@ use std::time::{Duration, Instant};
 
 use rodio::dynamic_mixer::DynamicMixerController;
 use rodio::queue::SourcesQueueInput;
-use rodio::OutputStream;
+use rodio::{OutputStream, Source};
 use tokio::sync::mpsc;
 use voice_proto::ServerVoice;
 
-// TODO: opus decoders
-
-pub struct PcmI16<I> {
+pub struct PcmF32<I> {
     samples: I,
     len: usize,
 }
 
-impl<I> PcmI16<I> {
+impl<I> PcmF32<I> {
     pub fn new(samples: I, len: usize) -> Self {
         Self { samples, len }
     }
 }
 
-impl<I> Iterator for PcmI16<I>
+impl<I> Iterator for PcmF32<I>
 where
-    I: Iterator<Item = i16>,
+    I: Iterator<Item = f32>,
 {
-    type Item = i16;
+    type Item = f32;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.samples.next()
-        // .and_then(|a| self.samples.next().map(|b| i16::from_be_bytes([a, b])))
     }
 }
 
-impl<I> rodio::Source for PcmI16<I>
+impl<I> rodio::Source for PcmF32<I>
 where
-    I: Iterator<Item = i16>,
+    I: Iterator<Item = f32>,
 {
     fn current_frame_len(&self) -> Option<usize> {
         Some(self.len / self.channels() as usize)
     }
 
     fn channels(&self) -> u16 {
-        1
+        2
     }
 
     fn sample_rate(&self) -> u32 {
@@ -73,7 +70,8 @@ impl Player {
 
     fn sink_thread(rx: mpsc::Receiver<PlayerEvent>) {
         let (_stream, stream_handle) = OutputStream::try_default().unwrap();
-        let (ctl, mixer) = rodio::dynamic_mixer::mixer::<i16>(1, 48000);
+
+        let (ctl, mixer) = rodio::dynamic_mixer::mixer(2, 48000);
         let sink = rodio::Sink::try_new(&stream_handle).unwrap();
         let (notify_tx, notify_src) = rodio::queue::queue(true);
         ctl.add(notify_src);
@@ -140,10 +138,10 @@ impl PlayRx {
 }
 
 pub async fn play(
-    ctl: Arc<DynamicMixerController<i16>>,
+    ctl: Arc<DynamicMixerController<f32>>,
     mut play_rx: tokio::sync::mpsc::Receiver<PlayerEvent>,
     sink: rodio::Sink,
-    notify_tx: Arc<SourcesQueueInput<i16>>,
+    notify_tx: Arc<SourcesQueueInput<f32>>,
 ) {
     let mut playing: Option<tokio::task::JoinHandle<()>> = None;
     while let Some(stream) = play_rx.recv().await {
@@ -171,7 +169,7 @@ pub async fn play(
             let not_playing = playing.as_ref().map(|v| v.is_finished()).unwrap_or(true);
             if not_playing {
                 playing = Some(tokio::task::spawn_blocking(move || {
-                    let rx = notify_tx.append_with_signal(bell);
+                    let rx = notify_tx.append_with_signal(bell.convert_samples().amplify(0.5));
                     let _ = rx.recv();
                 }));
             } else {
@@ -182,11 +180,12 @@ pub async fn play(
     tracing::debug!("play ended");
 }
 
-async fn play_stream(tx: Arc<SourcesQueueInput<i16>>, mut stream: PlayRx) -> anyhow::Result<()> {
+async fn play_stream(tx: Arc<SourcesQueueInput<f32>>, mut stream: PlayRx) -> anyhow::Result<()> {
     tracing::debug!("Started play stream");
     let mut state = State::new();
     let mut decoder =
-        audiopus::coder::Decoder::new(audiopus::SampleRate::Hz48000, audiopus::Channels::Mono)?;
+        audiopus::coder::Decoder::new(audiopus::SampleRate::Hz48000, audiopus::Channels::Stereo)?;
+    let mut clipper = audiopus::softclip::SoftClip::new(audiopus::Channels::Stereo);
     loop {
         let mut deadline = Instant::now();
         deadline += Duration::from_millis(20);
@@ -198,14 +197,14 @@ async fn play_stream(tx: Arc<SourcesQueueInput<i16>>, mut stream: PlayRx) -> any
                     None => break,
                 };
                 if let Some(voice) = state.push(pack) {
-                    decode_and_submit(Some(&voice.payload), &mut decoder, &tx);
+                    decode_and_submit(Some(&voice.payload), &mut decoder, &mut clipper, &tx)?;
                 }
             }
             // FIXME: deadline needs to depend on stream time
             _ = tokio::time::sleep_until(deadline.into()) => {
                 let chunks = state.drain().into_iter().flatten();
                 for chunk in chunks {
-                    decode_and_submit(chunk.as_ref().map(|v| &*v.payload), &mut decoder, &tx);
+                    decode_and_submit(chunk.as_ref().map(|v| &*v.payload), &mut decoder, &mut clipper, &tx)?;
                 }
             }
         }
@@ -217,23 +216,27 @@ async fn play_stream(tx: Arc<SourcesQueueInput<i16>>, mut stream: PlayRx) -> any
 fn decode_and_submit(
     payload: Option<&[u8]>,
     decoder: &mut audiopus::coder::Decoder,
-    tx: &Arc<SourcesQueueInput<i16>>,
-) {
-    let mut pcm = vec![0; 960];
+    clipper: &mut audiopus::softclip::SoftClip,
+    tx: &Arc<SourcesQueueInput<f32>>,
+) -> anyhow::Result<()> {
+    let mut pcm = vec![0f32; 960 * 2];
     let input = payload.map(TryInto::try_into).transpose().unwrap();
     let n_samples = {
         let output = (&mut pcm).try_into().unwrap();
-        match decoder.decode(input, output, false) {
+        match decoder.decode_float(input, output, false) {
             Ok(n_samples) => n_samples,
             Err(err) => {
                 tracing::error!(?err);
-                return;
+                return Ok(());
             }
         }
     };
-    pcm.truncate(n_samples);
-    let src = PcmI16::new(pcm.into_iter(), n_samples);
+    pcm.truncate(n_samples * 2);
+    let signals = (&mut pcm).try_into().unwrap();
+    clipper.apply(signals)?;
+    let src = PcmF32::new(pcm.into_iter(), n_samples);
     tx.append(src);
+    Ok(())
 }
 
 #[derive(Debug)]

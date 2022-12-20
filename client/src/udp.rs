@@ -60,7 +60,7 @@ impl UdpSetup {
         cipher: XSalsa20Poly1305,
         deaf: bool,
         mute: bool,
-    ) -> VoiceEventTx {
+    ) -> anyhow::Result<VoiceEventTx> {
         let received = Arc::new(AtomicU64::new(0));
         let set_received = received.clone();
         let get_received = received;
@@ -85,23 +85,15 @@ impl UdpSetup {
                 tracing::error!("udp rx dead: {}", e)
             }
         });
+        let (tx, rx) = RecordTx::new();
+        let stream = mic::record(tx)?;
         tokio::spawn(async move {
-            let (tx, rx) = RecordTx::new().expect("FIXME");
-            let _stream = mic::record(tx).expect("oof");
-            if let Err(e) = udp_tx(
-                self.sock,
-                rx,
-                get_received,
-                set_sent,
-                mute,
-                cipher,
-            )
-            .await
-            {
+            let _stream = stream;
+            if let Err(e) = udp_tx(self.sock, rx, get_received, set_sent, mute, cipher).await {
                 tracing::error!("udp tx dead: {}", e)
             }
         });
-        VoiceEventTx(voice_event_tx)
+        Ok(VoiceEventTx(voice_event_tx))
     }
 }
 
@@ -150,47 +142,19 @@ pub struct RecordRx {
 
 pub struct RecordTx {
     tx: mpsc::Sender<Vec<u8>>,
-    buf: Vec<i16>,
-    opus: audiopus::coder::Encoder,
 }
 
 impl RecordTx {
-    pub fn new() -> anyhow::Result<(Self, RecordRx)> {
+    pub fn new() -> (Self, RecordRx) {
         let (tx, rx) = mpsc::channel(10);
         let rx = RecordRx { rx };
-        let opus = audiopus::coder::Encoder::new(
-            audiopus::SampleRate::Hz48000,
-            audiopus::Channels::Mono,
-            audiopus::Application::Voip,
-        )?;
-        Ok((
-            Self {
-                tx,
-                buf: Vec::with_capacity(std::mem::size_of::<i16>() * 8000),
-                opus,
-            },
-            rx,
-        ))
+        (Self { tx }, rx)
     }
 
-    pub fn send(&mut self, voice: &[i16]) -> anyhow::Result<()> {
-        self.buf.extend_from_slice(voice);
-        const TWENTY_MS: usize = 48000 / 50;
-        let chunks = self.buf.chunks_exact(TWENTY_MS);
-        let rem = chunks.remainder();
-        for chunk in chunks {
-            let mut out = vec![0; 500];
-            let written = self.opus.encode(chunk, &mut out).unwrap();
-            out.truncate(written);
-            self.tx
-                .blocking_send(out)
-                .map_err(|_| anyhow::anyhow!("failed to send encoded chunk"))?;
-        }
-        let rem_len = rem.len();
-        let start = self.buf.len() - rem_len;
-        let src = start..self.buf.len();
-        self.buf.copy_within(src, 0);
-        self.buf.truncate(rem_len);
+    pub fn send(&mut self, voice: Vec<u8>) -> anyhow::Result<()> {
+        self.tx
+            .blocking_send(voice)
+            .map_err(|_| anyhow::anyhow!("failed to send encoded chunk"))?;
         Ok(())
     }
 }

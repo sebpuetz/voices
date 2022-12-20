@@ -8,6 +8,8 @@ use std::net::SocketAddr;
 
 use clap::Parser;
 use futures_util::FutureExt;
+use tracing::subscriber::set_global_default;
+use tracing_log::LogTracer;
 use tracing_subscriber::prelude::*;
 use uuid::Uuid;
 use voices_crypto::xsalsa20poly1305;
@@ -19,12 +21,14 @@ use ws::ControlStream;
 use crate::config::Config;
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "INFO".into()),
-        ))
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    set_global_default(
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::EnvFilter::new(
+                std::env::var("RUST_LOG").unwrap_or_else(|_| "INFO".into()),
+            ))
+            .with(tracing_subscriber::fmt::layer()),
+    )?;
+    LogTracer::init()?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
@@ -64,7 +68,7 @@ async fn async_main_() -> anyhow::Result<()> {
     let key = base64::decode(ready.crypt_key.unsecure())?;
     let cipher = xsalsa20poly1305::XSalsa20Poly1305::new_from_slice(&key)?;
     tracing::info!("{:?}", ready);
-    let voice_event_tx = udp.run(ready.src_id, cipher, config.deaf, config.mute);
+    let voice_event_tx = udp.run(ready.src_id, cipher, config.deaf, config.mute)?;
     for user in ready.present {
         tracing::info!("{:?}", user);
         voice_event_tx.already_present(user.source_id).await;
