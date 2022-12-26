@@ -1,5 +1,5 @@
 [package]
-name = "ws_proto"
+name = "voices-ws-proto"
 version = "0.1.0"
 edition = "2021"
 

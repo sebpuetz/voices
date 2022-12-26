@@ -1,5 +1,5 @@
 [package]
-name = "voices"
+name = "voices-gateway"
 version = "0.1.0"
 edition = "2021"
 
@@ -30,4 +30,4 @@ tungstenite = { version = "0.17.3", features = ["rustls"] }
 udp-proto = { version = "0.1.0", path = "../udp-proto" }
 uuid = { version = "1.1.2", features = ["v4", "serde"] }
 voice-server = { path = "../voice-server" }
-ws_proto = { path = "../ws_proto" }
+voices-ws-proto = { path = "../ws-proto" }

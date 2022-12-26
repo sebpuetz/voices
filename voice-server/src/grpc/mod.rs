@@ -6,15 +6,24 @@ use tonic::{async_trait, Status};
 use crate::connection::{ConnectionState, StatusResponse};
 use crate::{
     ConnectionData, EstablishSession, EstablishSessionError, OpenConnection, OpenConnectionError,
-    PeerNotFound, SessionData, VoiceServer,
+    PeerNotFound, SessionData, VoiceServerImpl,
 };
 
+pub mod client;
 #[path = "./voice_server.v1.rs"]
 pub mod proto;
 pub use tonic;
 
+use self::proto::voice_server_server::VoiceServerServer;
+
+impl VoiceServerImpl {
+    pub fn grpc(self) -> VoiceServerServer<Self> {
+        VoiceServerServer::new(self)
+    }
+}
+
 #[async_trait]
-impl proto::voice_server_server::VoiceServer for VoiceServer {
+impl proto::voice_server_server::VoiceServer for VoiceServerImpl {
     async fn open_connection(
         &self,
         request: tonic::Request<proto::OpenConnectionRequest>,
@@ -41,6 +50,7 @@ impl proto::voice_server_server::VoiceServer for VoiceServer {
         Ok(tonic::Response::new(response.into()))
     }
 
+    // FIXME: move logic to VoiceServerImpl
     async fn leave(
         &self,
         request: tonic::Request<proto::LeaveRequest>,
@@ -55,6 +65,7 @@ impl proto::voice_server_server::VoiceServer for VoiceServer {
         Ok(tonic::Response::new(proto::LeaveResponse {}))
     }
 
+    // FIXME: move logic to VoiceServerImpl
     async fn user_status(
         &self,
         request: tonic::Request<proto::UserStatusRequest>,

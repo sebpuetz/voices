@@ -13,7 +13,7 @@ use tracing_log::LogTracer;
 use tracing_subscriber::prelude::*;
 use uuid::Uuid;
 use voices_crypto::xsalsa20poly1305;
-use ws_proto::*;
+use voices_ws_proto::*;
 use xsalsa20poly1305::KeyInit;
 
 use ws::ControlStream;
@@ -30,8 +30,7 @@ fn main() -> anyhow::Result<()> {
     )?;
     LogTracer::init()?;
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(4)
+    let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     rt.block_on(async_main_())

@@ -8,11 +8,9 @@ use tokio::net::TcpStream;
 use tokio::select;
 use tracing::Instrument;
 use uuid::Uuid;
-// TODO: disentangle voice server & channels
-use voice_server::grpc::proto::voice_server_server::VoiceServer as _;
 use voice_server::grpc::{proto, tonic};
 use voice_server::VoiceServer;
-use ws_proto::{ClientEvent, Init, Join, Present};
+use voices_ws_proto::{ClientEvent, Init, Join, Present};
 
 use crate::server::channels::{ChannelEvent, ChannelEventKind, Channels, Chatroom, ClientInfo};
 use crate::server::ws::ControlStream;
@@ -26,29 +24,29 @@ use super::ws::ControlStreamError;
 /// Owns a handle to a [`VoiceServer`] and the known [`Channels`].
 ///
 /// Has a [`VoiceHandle`] if the client is currently in a channel.
-pub struct ServerSession {
+pub struct ServerSession<V: VoiceServer + Clone> {
     // client info, received in init msg
     client_id: Uuid,
     client_name: String,
     // eventloop / backwards chan
     ctl: ControlStream,
     // optionally connected channel
-    voice: Option<VoiceHandle>,
+    voice: Option<VoiceHandle<V>>,
 
     // server handles
-    voice_server_handle: VoiceServer,
+    voice_server_handle: V,
     // channel registry
     channels: Channels,
 }
 
-impl ServerSession {
+impl<V: VoiceServer + Clone> ServerSession<V> {
     /// Initialize the session on the incoming stream.
     ///
     /// Waits for the client handshake.
     #[tracing::instrument(skip_all)]
     pub async fn init(
         ctl: TcpStream,
-        voice_server_handle: VoiceServer,
+        voice_server_handle: V,
         channels: Channels,
     ) -> anyhow::Result<Self> {
         let ctl = Duration::from_millis(500)
@@ -164,12 +162,7 @@ impl ServerSession {
 
     /// Sends a stop signal to the voice connection if there is one.
     async fn stop_voice(&mut self) {
-        if let Some(voice) = self.voice.take() {
-            let req = tonic::Request::new(proto::LeaveRequest {
-                user_id: self.client_id.to_string(),
-                channel_id: voice.channel_id.to_string(),
-            });
-            let _ = self.voice_server_handle.leave(req).await.unwrap();
+        if self.voice.take().is_some() {
             let _ = self.ctl.disconnected().await;
         }
     }
@@ -184,7 +177,7 @@ impl ServerSession {
     pub async fn initialize_voice_connection(
         &mut self,
         room: Chatroom,
-    ) -> anyhow::Result<Option<VoiceHandle>> {
+    ) -> anyhow::Result<Option<VoiceHandle<V>>> {
         tracing::debug!("announcing udp");
         // should return source_id
         let channel_id = room.id();
@@ -245,7 +238,7 @@ impl ServerSession {
                 })
             })
             .collect();
-        let ready = ws_proto::Ready {
+        let ready = voices_ws_proto::Ready {
             id: channel_id,
             src_id: source_id,
             present,
@@ -253,7 +246,7 @@ impl ServerSession {
         };
         self.ctl.voice_ready(ready).await?;
         let voice_handle = self.voice_server_handle.clone();
-        let status_handle = status_check(voice_handle, client_id, channel_id);
+        let status_handle = status_check(voice_handle.clone(), client_id, channel_id);
         let info = ClientInfo {
             client_id,
             source_id,
@@ -261,16 +254,18 @@ impl ServerSession {
         };
         let room_handle = room.join(info);
         Ok(Some(VoiceHandle {
+            client_id,
             channel_id,
             status_handle,
+            voice_server: voice_handle,
             room_handle,
             source_id,
         }))
     }
 }
 
-fn status_check(
-    voice_handle: VoiceServer,
+fn status_check<V: VoiceServer>(
+    voice_handle: V,
     client_id: Uuid,
     channel_id: Uuid,
 ) -> tokio::task::JoinHandle<()> {
@@ -291,11 +286,11 @@ fn status_check(
                     .map(|req| req.into_inner().status)
                 {
                     Ok(Some(proto::user_status_response::Status::Peered(()))) => {
-                        tracing::debug!("voice connection is in peered state");
+                        tracing::trace!("voice connection is in peered state");
                         continue;
                     }
                     Ok(Some(proto::user_status_response::Status::Waiting(()))) => {
-                        tracing::debug!("voice connection is in waiting state");
+                        tracing::trace!("voice connection is in waiting state");
                         continue;
                     }
                     Ok(Some(proto::user_status_response::Status::Error(()))) | Ok(None) => {
@@ -318,16 +313,17 @@ fn status_check(
     )
 }
 
-// FIXME: disconnect on drop?
 #[allow(unused)]
-pub struct VoiceHandle {
+pub struct VoiceHandle<V: VoiceServer + Clone> {
+    client_id: Uuid,
     channel_id: Uuid,
     status_handle: tokio::task::JoinHandle<()>,
+    voice_server: V,
     room_handle: ChatRoomJoined,
     source_id: u32,
 }
 
-impl Future for VoiceHandle {
+impl<V: VoiceServer + Clone + Unpin> Future for VoiceHandle<V> {
     type Output = anyhow::Result<()>;
 
     fn poll(
@@ -335,5 +331,16 @@ impl Future for VoiceHandle {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         self.status_handle.poll_unpin(cx).map_err(Into::into)
+    }
+}
+
+impl<V: VoiceServer + Clone> Drop for VoiceHandle<V> {
+    fn drop(&mut self) {
+        let req = tonic::Request::new(proto::LeaveRequest {
+            user_id: self.client_id.to_string(),
+            channel_id: self.channel_id.to_string(),
+        });
+        let handle = self.voice_server.clone();
+        tokio::spawn(async move { handle.leave(req).await });
     }
 }

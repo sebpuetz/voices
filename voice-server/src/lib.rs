@@ -1,27 +1,33 @@
+pub mod config;
 pub mod connection;
 pub mod grpc;
 mod ports;
-use connection::StatusResponse;
+use connection::{StatusResponse, VoiceTask};
+use futures_util::stream::FuturesUnordered;
 pub use ports::Ports;
+use tokio_stream::StreamExt;
+use tracing::Instrument;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use uuid::Uuid;
 
 use crate::connection::{ConnectionState, VoiceConnection, VoiceControl};
 use crate::ports::PortRef;
 
+pub use grpc::proto::voice_server_server::VoiceServer;
+
 #[derive(Clone)]
-pub struct VoiceServer {
+pub struct VoiceServerImpl {
     host_addr: IpAddr,
     ports: Ports,
     rooms: Arc<RwLock<HashMap<Uuid, Room>>>,
 }
 
-impl VoiceServer {
+impl VoiceServerImpl {
     pub fn new(host_addr: IpAddr, ports: Ports) -> Self {
         Self {
             host_addr,
@@ -30,27 +36,27 @@ impl VoiceServer {
         }
     }
 
+    /// Get the room identified by [`id`].
+    // FIXME: Currently creates the room if it doesn't exist, replace with channel registry.
     pub async fn room(&self, id: Uuid) -> Room {
         self.rooms
             .write()
             .await
             .entry(id)
-            // FIXME: implement persistent channel registry
             .or_insert_with(|| {
-                let (voice_tx, _) = broadcast::channel(50);
-                Room {
-                    id,
-                    voice_tx,
-                    peers: Arc::default(),
-                }
+                let (voice_tx, _) = broadcast::channel(3);
+                Room::new(id, voice_tx)
             })
             .clone()
     }
 
+    /// Try to reserve a port for a voice connection.
     pub async fn allocate_port(&self) -> Option<PortRef> {
         self.ports.get()
     }
 
+    /// Start establishing a voice connection.
+    #[tracing::instrument(skip_all, fields(?req.client_id, channel_id=?req.channel_id))]
     pub async fn open_connection_impl(
         &self,
         req: OpenConnection,
@@ -91,10 +97,6 @@ impl VoiceServer {
             src_id: response.source_id,
             crypt_key: response.crypt_key,
         })
-    }
-
-    pub fn host_addr(&self) -> IpAddr {
-        self.host_addr
     }
 }
 
@@ -148,13 +150,53 @@ pub enum JoinError {
 
 #[derive(Clone)]
 pub struct Room {
-    id: Uuid,
     voice_tx: broadcast::Sender<(u32, voice_proto::Voice)>,
     peers: Arc<RwLock<HashMap<Uuid, VoiceControl>>>,
+    handles_tx: mpsc::Sender<VoiceTask>,
+    span: tracing::Span,
 }
 
 impl Room {
-    #[tracing::instrument(skip_all, fields(?client_id, id=?self.id))]
+    pub fn new(id: Uuid, voice_tx: broadcast::Sender<(u32, voice_proto::Voice)>) -> Self {
+        let span = tracing::info_span!("room", id=?id);
+        span.follows_from(None);
+        let peers: Arc<RwLock<HashMap<Uuid, VoiceControl>>> = Arc::default();
+        let peers_clone = peers.clone();
+        let (handles_tx, mut handles_rx) = mpsc::channel(10);
+        let watcher_span = tracing::debug_span!("voice_task_watcher");
+        watcher_span.follows_from(&span);
+        tokio::spawn(
+            async move {
+                let mut handles = FuturesUnordered::new();
+                loop {
+                    tokio::select! {
+                        Some(id) = handles.next() => {
+                            tracing::debug!("task for client_id={id} ended");
+                            peers_clone.write().await.remove(&id);
+                        },
+                        task = handles_rx.recv() => {
+                            match task {
+                                Some(task) => {
+                                    tracing::debug!("received task for client_id={id}");
+                                    handles.push(task);
+                                },
+                                None => break,
+                            }
+                        }
+                    }
+                }
+            }
+            .instrument(watcher_span),
+        );
+        Self {
+            voice_tx,
+            peers,
+            handles_tx,
+            span,
+        }
+    }
+
+    #[tracing::instrument(follows_from = [self.span.id()], skip_all)]
     pub async fn join(
         &self,
         client_id: Uuid,
@@ -176,18 +218,26 @@ impl Room {
                         "connection already initialized"
                     ))),
                     Err(_) => {
-                        let control =
+                        let (control, task) =
                             VoiceConnection::start(client_id, port, self.voice_tx.clone(), host_ip)
                                 .await?;
                         occ.insert(control);
+                        self.handles_tx
+                            .send(task)
+                            .await
+                            .map_err(anyhow::Error::from)?;
                         Ok(())
                     }
                 }
             }
             std::collections::hash_map::Entry::Vacant(v) => {
-                let control =
+                let (control, task) =
                     VoiceConnection::start(client_id, port, self.voice_tx.clone(), host_ip).await?;
                 v.insert(control);
+                self.handles_tx
+                    .send(task)
+                    .await
+                    .map_err(anyhow::Error::from)?;
                 tracing::debug!("stored voice control");
                 Ok(())
             }
@@ -195,7 +245,9 @@ impl Room {
     }
 
     pub async fn peer(&self, client_id: Uuid) -> Result<VoiceControl, PeerNotFound> {
-        dbg!(self.peers.read().await)
+        self.peers
+            .read()
+            .await
             .get(&client_id)
             .cloned()
             .ok_or(PeerNotFound)

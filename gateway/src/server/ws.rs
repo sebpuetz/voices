@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_tungstenite::WebSocketStream;
 use uuid::Uuid;
-use ws_proto::{
+use voices_ws_proto::{
     Announce, ClientEvent, Disconnected, Init, JoinError, Left, MessageExt, Present, Ready,
     ServerEvent,
 };

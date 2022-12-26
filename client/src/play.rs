@@ -148,6 +148,7 @@ pub async fn play(
         let quiet = match stream {
             PlayerEvent::Joined { rx: joined, quiet } => {
                 tracing::debug!("Received play stream");
+                // FIXME: there can be substantial lag since the `samples` queue will happily accept more data without ever fast forwarding
                 let (tx, samples) = rodio::queue::queue(true);
                 ctl.add(samples);
                 tokio::task::spawn_local(async move {

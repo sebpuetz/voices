@@ -1,8 +1,8 @@
 [workspace]
 members = [
   "./client",
-  "./server",
-  "./ws_proto",
+  "./gateway",
+  "./ws-proto",
   "./udp-proto",
   "./voice-proto",
   "./voice-server",

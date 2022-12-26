@@ -3,16 +3,17 @@ mod util;
 
 use std::net::SocketAddr;
 
-use crate::server::channels::Channels;
-use anyhow::Context;
 use clap::Parser;
 use server::session::ServerSession;
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 use tracing::subscriber::set_global_default;
 use tracing::Instrument;
 use tracing_log::LogTracer;
 use tracing_subscriber::prelude::*;
-use voice_server::{Ports, VoiceServer};
+use voice_server::config::VoiceServerConfig;
+use voice_server::VoiceServer;
+
+use crate::server::channels::Channels;
 
 #[derive(Parser)]
 #[clap(name = "voice-server")]
@@ -20,12 +21,11 @@ use voice_server::{Ports, VoiceServer};
 struct Config {
     #[clap(long, default_value_t = 33332)]
     ws_listen_port: u16,
-    #[clap(long, default_value_t = 33333)]
-    first_udp_port: u16,
-    #[clap(long, default_value_t = 2)]
-    udp_ports: u16,
-    #[clap(long, default_value = "localhost")]
-    udp_host: String,
+    // FIXME: voice_config and voice_server_addr should be mutually exclusive...
+    #[clap(long)]
+    voice_server_addr: Option<String>,
+    #[clap(flatten)]
+    voice_config: VoiceServerConfig,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -53,22 +53,30 @@ async fn main_() -> anyhow::Result<()> {
     let ctl_listener = tokio::net::TcpListener::bind(tcp_addr).await?;
     tracing::info!("Control listening on {}", ctl_listener.local_addr()?);
     let channels = Channels::new();
-    let ports = Ports::new(config.first_udp_port, config.udp_ports as _);
-    let host_addr = tokio::net::lookup_host((&*config.udp_host, 0))
-        .await
-        .context("Failed to resolve UDP host")?
-        .next()
-        .context("Failed to resolve UDP host")?
-        .ip();
-    let voice_server = VoiceServer::new(host_addr, ports);
+    match config.voice_server_addr {
+        Some(addr) => {
+            // FIXME lazy connect
+            let client =
+                voice_server::grpc::proto::voice_server_client::VoiceServerClient::connect(addr)
+                    .await?;
+            run_server(client, ctl_listener, channels).await
+        }
+        None => run_server(config.voice_config.server().await?, ctl_listener, channels).await,
+    }
+}
 
+async fn run_server<V: VoiceServer + Clone>(
+    voice_handle: V,
+    ctl_listener: TcpListener,
+    channels: Channels,
+) -> anyhow::Result<()> {
     loop {
         tracing::debug!("waiting for tcp connection");
         let (inc, addr) = ctl_listener.accept().await?;
         tracing::debug!("accepted tcp connection from {}", addr);
         let channels = channels.clone();
         let span = tracing::span!(tracing::Level::INFO, "session", addr=%addr,);
-        let voice_server = voice_server.clone();
+        let voice_server = voice_handle.clone();
         tokio::spawn(
             async move {
                 if let Err(e) = handle_session(inc, channels, voice_server).await {
@@ -82,11 +90,14 @@ async fn main_() -> anyhow::Result<()> {
     }
 }
 
-async fn handle_session(
+async fn handle_session<V>(
     inc: TcpStream,
     channels: Channels,
-    voice_server: VoiceServer,
-) -> anyhow::Result<()> {
+    voice_server: V,
+) -> anyhow::Result<()>
+where
+    V: VoiceServer + Clone,
+{
     ServerSession::init(inc, voice_server, channels)
         .await?
         .run_session()

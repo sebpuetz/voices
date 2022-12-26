@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use rand::thread_rng;
 use tokio::net::UdpSocket;
 use tokio::sync::{broadcast, mpsc};
+use tokio::task::JoinHandle;
 use tracing::Instrument;
 use udp_proto::UdpWithBuf;
 use uuid::Uuid;
@@ -134,6 +135,41 @@ pub enum ConnectionState {
     Peered,
 }
 
+pub struct VoiceTask {
+    handle: JoinHandle<()>,
+    client_id: Uuid,
+}
+
+impl std::fmt::Debug for VoiceTask {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VoiceTask")
+            .field("client_id", &self.client_id)
+            .finish()
+    }
+}
+
+impl VoiceTask {
+    pub fn new(handle: JoinHandle<()>, client_id: Uuid) -> Self {
+        Self { handle, client_id }
+    }
+
+    pub fn client_id(&self) -> Uuid {
+        self.client_id
+    }
+}
+
+impl std::future::Future for VoiceTask {
+    type Output = Uuid;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let id = self.client_id;
+        std::pin::Pin::new(&mut self.handle).poll(cx).map(|_| id)
+    }
+}
+
 pub struct VoiceConnection {
     udp: UdpWithBuf,
     control_chan: mpsc::Receiver<ControlRequest>,
@@ -151,7 +187,7 @@ impl VoiceConnection {
         port: PortRef,
         voice_tx: broadcast::Sender<(u32, voice_proto::Voice)>,
         host_ip: IpAddr,
-    ) -> anyhow::Result<VoiceControl> {
+    ) -> anyhow::Result<(VoiceControl, VoiceTask)> {
         let sock = UdpSocket::bind(SocketAddr::from((Ipv6Addr::UNSPECIFIED, port.port)))
             .await
             .map_err(|e| {
@@ -172,14 +208,16 @@ impl VoiceConnection {
             voice_tx,
             host_ip,
         };
-        tokio::spawn(slf.run().instrument(tracing::Span::current()));
+        let handle = tokio::spawn(slf.run().instrument(tracing::Span::current()));
+        let task = VoiceTask::new(handle, client_id);
         let tx = VoiceControl { tx };
-        Ok(tx)
+        Ok((tx, task))
     }
 
     #[tracing::instrument(name="voice_run", skip(self), fields(source_id=%self.source_id))]
     pub async fn run(mut self) {
         // FIXME: timeout
+        let mut init_timeout = Box::pin(tokio::time::sleep(Duration::from_secs(15)));
         loop {
             tokio::select! {
                 packet = self.udp.recv_from() => {
@@ -224,6 +262,10 @@ impl VoiceConnection {
                         }
                     }
                     break;
+                }
+                _ = &mut init_timeout => {
+                    tracing::info!("client timed out");
+                    return;
                 }
             }
         }
