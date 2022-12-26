@@ -3,6 +3,7 @@ mod util;
 
 use std::net::SocketAddr;
 
+use crate::server::channels::Channels;
 use anyhow::Context;
 use clap::Parser;
 use server::session::ServerSession;
@@ -11,7 +12,6 @@ use tracing::subscriber::set_global_default;
 use tracing::Instrument;
 use tracing_log::LogTracer;
 use tracing_subscriber::prelude::*;
-use voice_server::channel::Channels;
 use voice_server::{Ports, VoiceServer};
 
 #[derive(Parser)]

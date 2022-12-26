@@ -41,7 +41,7 @@ async fn async_main_() -> anyhow::Result<()> {
     let config = Config::parse();
     let (stream, _) = tokio_tungstenite::connect_async(config.ws_endpoint).await?;
     let mut stream = ControlStream::new(stream);
-    let user_id = Uuid::new_v4();
+    let user_id = config.client_id.unwrap_or_else(Uuid::new_v4);
     stream.init(user_id, config.name).await?;
 
     let channel_id = config.room_id.unwrap_or_else(Uuid::new_v4);
@@ -101,6 +101,9 @@ async fn async_main_() -> anyhow::Result<()> {
             ServerEvent::Left(left) => {
                 voice_event_tx.left(left.source_id).await;
                 tracing::info!("{:?}", left);
+            }
+            ServerEvent::Disconnected(_) => {
+                anyhow::bail!("voice disconnected");
             }
         }
     }

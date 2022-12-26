@@ -52,10 +52,14 @@ pub enum ServerEvent {
     Keepalive(Keepalive),
     Ready(Ready),
     Joined(Present),
+    Disconnected(Disconnected),
     Left(Left),
     UdpAnnounce(Announce),
     JoinError(JoinError),
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Disconnected {}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Ready {

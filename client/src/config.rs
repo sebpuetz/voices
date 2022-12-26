@@ -9,6 +9,8 @@ pub struct Config {
     pub ws_endpoint: String,
     #[clap(long)]
     pub room_id: Option<Uuid>,
+    #[clap(long)]
+    pub client_id: Option<Uuid>,
     #[clap(long, default_value = "Foo")]
     pub name: String,
     #[clap(long)]

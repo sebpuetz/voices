@@ -1,20 +1,24 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
+use std::str::FromStr;
 use std::time::Duration;
 
+use anyhow::Context;
 use futures_util::{Future, FutureExt};
 use tokio::net::TcpStream;
 use tokio::select;
-use tokio::sync::broadcast;
 use tracing::Instrument;
 use uuid::Uuid;
 // TODO: disentangle voice server & channels
-use voice_server::channel::{ChannelEvent, ChannelEventKind, Channels, Chatroom};
-use voice_server::{SetupError, VoiceControl, VoiceServer};
+use voice_server::grpc::proto::voice_server_server::VoiceServer as _;
+use voice_server::grpc::{proto, tonic};
+use voice_server::VoiceServer;
 use ws_proto::{ClientEvent, Init, Join, Present};
 
+use crate::server::channels::{ChannelEvent, ChannelEventKind, Channels, Chatroom, ClientInfo};
 use crate::server::ws::ControlStream;
 use crate::util::TimeoutExt;
 
+use super::channels::ChatRoomJoined;
 use super::ws::ControlStreamError;
 
 /// Representation of a client session
@@ -73,7 +77,7 @@ impl ServerSession {
         loop {
             let evt = self.ctl.next_event();
             let (handle, chan_notify) = match self.voice.as_mut() {
-                Some(v) => ((&mut v.handle).boxed(), v.updates.recv().boxed()),
+                Some(v) => ((&mut v.status_handle).boxed(), v.room_handle.recv().boxed()),
                 None => (
                     std::future::pending().boxed(),
                     std::future::pending().boxed(),
@@ -84,12 +88,14 @@ impl ServerSession {
                     if let Err(e) = handle {
                         tracing::error!("Voice errored: {}", e);
                     }
+                    self.ctl.disconnected().await?;
                     self.voice = None;
                 }
                 evt = evt => {
                     if let Some(evt) = evt {
                         self.handle_event(evt).await?;
                     } else {
+                        self.stop_voice().await;
                         return Ok(());
                     }
                 },
@@ -159,7 +165,12 @@ impl ServerSession {
     /// Sends a stop signal to the voice connection if there is one.
     async fn stop_voice(&mut self) {
         if let Some(voice) = self.voice.take() {
-            let _ = voice.ctl_tx.stop().await;
+            let req = tonic::Request::new(proto::LeaveRequest {
+                user_id: self.client_id.to_string(),
+                channel_id: voice.channel_id.to_string(),
+            });
+            let _ = self.voice_server_handle.leave(req).await.unwrap();
+            let _ = self.ctl.disconnected().await;
         }
     }
 
@@ -175,38 +186,56 @@ impl ServerSession {
         room: Chatroom,
     ) -> anyhow::Result<Option<VoiceHandle>> {
         tracing::debug!("announcing udp");
-        let room_id = room.id();
-        let room2 = room.clone();
         // should return source_id
-        let (voice, ctl_tx) = match self
-            .voice_server_handle
-            .connection(self.client_id, self.client_name.clone(), room)
-            .await
-        {
-            Ok(o) => o,
-            Err(SetupError::NoOpenPorts) => {
-                tracing::warn!("no free udp port");
-                return Ok(None);
-            }
-            Err(e) => return Err(e.into()),
+        let channel_id = room.id();
+        let client_id = self.client_id;
+        let req = proto::OpenConnectionRequest {
+            user_name: self.client_name.clone(),
+            user_id: self.client_id.to_string(),
+            channel_id: channel_id.to_string(),
         };
-        let source_id = voice.source_id();
-        let crypt_key = base64::encode(voice.crypt_key()).into();
-
-        let udp_addr = voice.udp_addr();
+        let req = tonic::Request::new(req);
+        let resp = match self.voice_server_handle.open_connection(req).await {
+            Ok(o) => o.into_inner(),
+            Err(e) => {
+                tracing::warn!("open conn failed {:?}", e);
+                return Err(e.into());
+            }
+        };
+        let addr = resp.udp_sock.context("Missing response field")?;
+        let port = addr.port as u16;
+        let ip = IpAddr::from_str(&addr.ip).context("Invalid IpAddr")?;
+        let udp_addr = SocketAddr::from((ip, port));
         tracing::debug!("udp running on {:?}", udp_addr);
-        let voice = tokio::spawn(voice.run().instrument(tracing::Span::current()));
         self.ctl.announce_udp(udp_addr).await?;
-        tracing::debug!("announced udp");
-
-        tracing::debug!("waiting for client udp addr");
+        tracing::debug!("announced udp, waiting for client udp addr");
 
         let client_udp = self.ctl.await_client_udp().await?;
         let client_udp = SocketAddr::from((client_udp.ip, client_udp.port));
+        anyhow::ensure!(!client_udp.ip().is_unspecified());
         tracing::debug!("received client udp addr {client_udp}");
-        ctl_tx.init(client_udp).await?;
+
+        let req = proto::EstablishSessionRequest {
+            user_id: self.client_id.to_string(),
+            channel_id: channel_id.to_string(),
+            client_sock: Some(proto::SockAddr {
+                port: client_udp.port() as _,
+                ip: client_udp.ip().to_string(),
+            }),
+        };
+        let req = tonic::Request::new(req);
+        let resp = match self.voice_server_handle.establish_session(req).await {
+            Ok(o) => o.into_inner(),
+            Err(e) => {
+                tracing::warn!("open conn failed {:?}", e);
+                return Err(e.into());
+            }
+        };
+        let source_id = resp.src_id;
+        let crypt_key = base64::encode(resp.crypt_key).into();
         tracing::debug!("successfully notified udp task");
-        let present = room2
+
+        let present = room
             .list()
             .into_iter()
             .filter_map(|v| {
@@ -217,28 +246,84 @@ impl ServerSession {
             })
             .collect();
         let ready = ws_proto::Ready {
-            id: room_id,
+            id: channel_id,
             src_id: source_id,
             present,
             crypt_key,
         };
         self.ctl.voice_ready(ready).await?;
+        let voice_handle = self.voice_server_handle.clone();
+        let status_handle = status_check(voice_handle, client_id, channel_id);
+        let info = ClientInfo {
+            client_id,
+            source_id,
+            name: self.client_name.clone(),
+        };
+        let room_handle = room.join(info);
         Ok(Some(VoiceHandle {
-            room_id,
-            handle: voice,
-            ctl_tx,
-            updates: room2.updates(),
+            channel_id,
+            status_handle,
+            room_handle,
             source_id,
         }))
     }
 }
 
+fn status_check(
+    voice_handle: VoiceServer,
+    client_id: Uuid,
+    channel_id: Uuid,
+) -> tokio::task::JoinHandle<()> {
+    // FIXME: stop on drop
+    tokio::spawn(
+        async move {
+            let mut inter = tokio::time::interval(Duration::from_secs(5));
+            inter.tick().await;
+            loop {
+                inter.tick().await;
+                let req = tonic::Request::new(proto::UserStatusRequest {
+                    user_id: client_id.to_string(),
+                    channel_id: channel_id.to_string(),
+                });
+                match voice_handle
+                    .user_status(req)
+                    .await
+                    .map(|req| req.into_inner().status)
+                {
+                    Ok(Some(proto::user_status_response::Status::Peered(()))) => {
+                        tracing::debug!("voice connection is in peered state");
+                        continue;
+                    }
+                    Ok(Some(proto::user_status_response::Status::Waiting(()))) => {
+                        tracing::debug!("voice connection is in waiting state");
+                        continue;
+                    }
+                    Ok(Some(proto::user_status_response::Status::Error(()))) | Ok(None) => {
+                        tracing::info!("voice connection errored");
+                        break;
+                    }
+                    Err(status) => {
+                        if let tonic::Code::NotFound = status.code() {
+                            tracing::info!("didn't find voice connection");
+                            break;
+                        } else {
+                            tracing::warn!("status request failed");
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+        .instrument(tracing::Span::current()),
+    )
+}
+
+// FIXME: disconnect on drop?
 #[allow(unused)]
 pub struct VoiceHandle {
-    room_id: Uuid,
-    handle: tokio::task::JoinHandle<()>,
-    ctl_tx: VoiceControl,
-    updates: broadcast::Receiver<ChannelEvent>,
+    channel_id: Uuid,
+    status_handle: tokio::task::JoinHandle<()>,
+    room_handle: ChatRoomJoined,
     source_id: u32,
 }
 
@@ -249,6 +334,6 @@ impl Future for VoiceHandle {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
-        self.handle.poll_unpin(cx).map_err(Into::into)
+        self.status_handle.poll_unpin(cx).map_err(Into::into)
     }
 }
