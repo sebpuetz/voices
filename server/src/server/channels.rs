@@ -4,9 +4,12 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use voice_proto::Voice;
-
-use crate::ClientInfo;
+#[derive(Clone, Debug)]
+pub struct ClientInfo {
+    pub client_id: Uuid,
+    pub source_id: u32,
+    pub name: String,
+}
 
 /// In-memory representation of channels
 #[derive(Default, Clone)]
@@ -34,13 +37,11 @@ impl Channels {
 /// Chatroom representation
 ///
 /// Offers a broadcast sender for channel events, a list of present users by ID and a voice sender
-// TODO: separate Chatroom representation and voice package delivery
 #[derive(Clone)]
 pub struct Chatroom {
     room_id: Uuid,
     notify: broadcast::Sender<ChannelEvent>,
     present: Arc<RwLock<HashMap<Uuid, ClientInfo>>>,
-    voice_tx: broadcast::Sender<(u32, Voice)>,
 }
 
 impl Chatroom {
@@ -49,7 +50,6 @@ impl Chatroom {
             room_id: id,
             notify: broadcast::channel(100).0,
             present: Arc::default(),
-            voice_tx: broadcast::channel(100).0,
         };
         let present = slf.present.clone();
         let mut updates = slf.updates();
@@ -88,7 +88,7 @@ impl Chatroom {
         self.present.read().unwrap().values().cloned().collect()
     }
 
-    pub fn join(&self, info: ClientInfo) -> ChatRoomVoiceHandle {
+    pub fn join(&self, info: ClientInfo) -> ChatRoomJoined {
         let ClientInfo {
             client_id,
             source_id,
@@ -97,13 +97,7 @@ impl Chatroom {
         let _ = self
             .notify
             .send(ChannelEvent::joined(client_id, name.clone(), source_id));
-        ChatRoomVoiceHandle::new(
-            self.voice_tx.clone(),
-            self.notify.clone(),
-            client_id,
-            source_id,
-            name,
-        )
+        ChatRoomJoined::new(self.notify.clone(), client_id, source_id, name)
     }
 
     pub fn id(&self) -> Uuid {
@@ -153,39 +147,32 @@ impl ChannelEvent {
     }
 }
 
-pub struct ChatRoomVoiceHandle {
-    rx: broadcast::Receiver<(u32, Voice)>,
-    tx: broadcast::Sender<(u32, Voice)>,
+pub struct ChatRoomJoined {
     leave_tx: broadcast::Sender<ChannelEvent>,
+    updates: broadcast::Receiver<ChannelEvent>,
     source_id: u32,
     client_id: Uuid,
     name: String,
 }
 
-impl ChatRoomVoiceHandle {
+impl ChatRoomJoined {
     fn new(
-        tx: broadcast::Sender<(u32, Voice)>,
         leave_tx: broadcast::Sender<ChannelEvent>,
         client_id: Uuid,
         source_id: u32,
         name: String,
     ) -> Self {
         Self {
-            rx: tx.subscribe(),
-            tx,
             source_id,
+            updates: leave_tx.subscribe(),
             client_id,
             leave_tx,
             name,
         }
     }
 
-    pub fn send(&self, msg: Voice) -> Result<usize, broadcast::error::SendError<(u32, Voice)>> {
-        self.tx.send((self.source_id, msg))
-    }
-
-    pub async fn recv(&mut self) -> Result<(u32, Voice), broadcast::error::RecvError> {
-        self.rx.recv().await
+    pub async fn recv(&mut self) -> Result<ChannelEvent, broadcast::error::RecvError> {
+        self.updates.recv().await
     }
 
     pub fn source_id(&self) -> u32 {
@@ -197,7 +184,7 @@ impl ChatRoomVoiceHandle {
     }
 }
 
-impl Drop for ChatRoomVoiceHandle {
+impl Drop for ChatRoomJoined {
     fn drop(&mut self) {
         let _ = self.leave_tx.send(ChannelEvent::left(
             self.client_id,

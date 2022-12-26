@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+import "google/protobuf/empty.proto";
+
+package voice_server.v1;
+
+service VoiceServer {
+  rpc OpenConnection(OpenConnectionRequest) returns (OpenConnectionResponse) {}
+  rpc EstablishSession(EstablishSessionRequest) returns (EstablishSessionResponse) {}
+  rpc Leave(LeaveRequest) returns (LeaveResponse) {}
+  rpc UserStatus(UserStatusRequest) returns (UserStatusResponse) {}
+}
+
+message OpenConnectionRequest {
+  string user_name = 1;
+  string user_id = 2;
+  string channel_id = 3;
+}
+
+message OpenConnectionResponse {
+    SockAddr udp_sock = 1;
+}
+
+message EstablishSessionRequest {
+    string user_id = 1;
+    string channel_id = 2;
+    SockAddr client_sock = 3;
+}
+
+message EstablishSessionResponse {
+    uint32 src_id = 1;
+    bytes crypt_key = 2;
+}
+
+message SockAddr {
+    string ip = 1;
+    uint32 port = 2;
+}
+
+message LeaveRequest {
+  string user_id = 1;
+  string channel_id = 2;
+}
+
+message LeaveResponse {
+  // Ok / Error
+}
+
+message UserStatusRequest {
+  string user_id = 1;
+  string channel_id = 2;
+}
+
+message UserStatusResponse {
+  oneof Status {
+    google.protobuf.Empty Waiting = 1;
+    google.protobuf.Empty Peered = 2;
+    google.protobuf.Empty Error = 3;
+  }
+}

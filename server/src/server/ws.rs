@@ -10,7 +10,8 @@ use tokio::time::Instant;
 use tokio_tungstenite::WebSocketStream;
 use uuid::Uuid;
 use ws_proto::{
-    Announce, ClientEvent, Init, JoinError, Left, MessageExt, Present, Ready, ServerEvent,
+    Announce, ClientEvent, Disconnected, Init, JoinError, Left, MessageExt, Present, Ready,
+    ServerEvent,
 };
 
 use crate::util::TimeoutExt;
@@ -63,8 +64,12 @@ impl ControlStream {
             .await
     }
 
+    pub async fn disconnected(&self) -> Result<(), ControlStreamError> {
+        self.send(ServerEvent::Disconnected(Disconnected {})).await
+    }
+
     pub async fn join_error(&self, room_id: Uuid) -> Result<(), ControlStreamError> {
-        self.send(ServerEvent::JoinError(JoinError { room_id }))
+        self.send(ServerEvent::JoinError(dbg!(JoinError { room_id })))
             .await
     }
 

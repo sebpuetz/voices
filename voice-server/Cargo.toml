@@ -32,3 +32,7 @@ ws_proto = { path = "../ws_proto" }
 voices-crypto = { path = "../voices-crypto" }
 voice-proto = { path = "../voice-proto", features = ["server"] }
 xsalsa20poly1305 = { version = "0.9.0", features = ["std"] }
+
+[build-dependencies]
+anyhow = "1.0.58"
+tonic-build = "0.8"
