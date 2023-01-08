@@ -6,9 +6,25 @@ package voice_server.v1;
 
 service VoiceServer {
   rpc OpenConnection(OpenConnectionRequest) returns (OpenConnectionResponse) {}
-  rpc EstablishSession(EstablishSessionRequest) returns (EstablishSessionResponse) {}
+  rpc EstablishSession(EstablishSessionRequest)
+      returns (EstablishSessionResponse) {}
   rpc Leave(LeaveRequest) returns (LeaveResponse) {}
   rpc UserStatus(UserStatusRequest) returns (UserStatusResponse) {}
+  rpc Status(StatusRequest) returns (StatusResponse) {}
+  rpc AssignChannel(AssignChannelRequest) returns (AssignChannelResponse) {}
+}
+
+message AssignChannelRequest { string channel_id = 1; }
+message AssignChannelResponse {}
+
+message StatusRequest { string channel_id = 1; }
+
+message StatusResponse { repeated ClientInfo info = 1; }
+
+message ClientInfo {
+  string client_id = 1;
+  uint32 src_id = 2;
+  string name = 3;
 }
 
 message OpenConnectionRequest {
@@ -17,24 +33,22 @@ message OpenConnectionRequest {
   string channel_id = 3;
 }
 
-message OpenConnectionResponse {
-    SockAddr udp_sock = 1;
-}
+message OpenConnectionResponse { SockAddr udp_sock = 1; }
 
 message EstablishSessionRequest {
-    string user_id = 1;
-    string channel_id = 2;
-    SockAddr client_sock = 3;
+  string user_id = 1;
+  string channel_id = 2;
+  SockAddr client_sock = 3;
 }
 
 message EstablishSessionResponse {
-    uint32 src_id = 1;
-    bytes crypt_key = 2;
+  uint32 src_id = 1;
+  bytes crypt_key = 2;
 }
 
 message SockAddr {
-    string ip = 1;
-    uint32 port = 2;
+  string ip = 1;
+  uint32 port = 2;
 }
 
 message LeaveRequest {

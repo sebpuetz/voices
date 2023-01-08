@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "./client",
+  "./channels-internal",
   "./gateway",
   "./ws-proto",
   "./udp-proto",

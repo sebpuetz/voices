@@ -1,4 +1,5 @@
 use std::net::{Ipv6Addr, SocketAddr};
+use std::sync::Arc;
 
 use clap::Parser;
 use tokio::signal::ctrl_c;
@@ -19,7 +20,12 @@ async fn main() -> anyhow::Result<()> {
     LogTracer::init()?;
     let config = Config::parse();
     tracing::info!("starting server with {:#?}", config);
-    let server = config.voice_server.server().await?.grpc();
+    let ch =
+        tonic::transport::Endpoint::from(config.channels_addr.parse::<tonic::transport::Uri>()?)
+            .connect_lazy();
+    let client = voices_channels::grpc::proto::channels_client::ChannelsClient::new(ch);
+    // TODO: register voice server with channels registry, clear previously hosted channels
+    let server = config.voice_server.server(Arc::new(client)).await?.grpc();
     tonic::transport::Server::builder()
         .add_service(server)
         .serve_with_shutdown(config.listen_addr(), async {
@@ -38,6 +44,8 @@ pub struct Config {
     http_port: u16,
     #[clap(flatten)]
     voice_server: VoiceServerConfig,
+    #[clap(long, default_value = "http://localhost:33330")]
+    channels_addr: String,
 }
 
 impl Config {

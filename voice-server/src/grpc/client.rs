@@ -7,6 +7,14 @@ use crate::grpc::proto::voice_server_client as client;
 // FIXME: downsides to reusing server trait?
 #[async_trait]
 impl proto::voice_server_server::VoiceServer for client::VoiceServerClient<Channel> {
+    async fn assign_channel(
+        &self,
+        request: tonic::Request<proto::AssignChannelRequest>,
+    ) -> Result<tonic::Response<proto::AssignChannelResponse>, tonic::Status> {
+        let mut slf = self.clone();
+        client::VoiceServerClient::assign_channel(&mut slf, request).await
+    }
+
     async fn open_connection(
         &self,
         request: tonic::Request<proto::OpenConnectionRequest>,
@@ -37,5 +45,13 @@ impl proto::voice_server_server::VoiceServer for client::VoiceServerClient<Chann
     ) -> Result<tonic::Response<proto::UserStatusResponse>, tonic::Status> {
         let mut slf = self.clone();
         client::VoiceServerClient::user_status(&mut slf, request).await
+    }
+
+    async fn status(
+        &self,
+        request: tonic::Request<proto::StatusRequest>,
+    ) -> Result<tonic::Response<proto::StatusResponse>, tonic::Status> {
+        let mut slf = self.clone();
+        client::VoiceServerClient::status(&mut slf, request).await
     }
 }

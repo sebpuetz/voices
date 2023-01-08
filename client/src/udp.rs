@@ -225,34 +225,33 @@ impl ReceiverState {
         }
     }
 
+    // FIXME: this should be a priority queue (drop old packets, based on sequence)
+    // instead of FIFO (drop new packets, based on arrival)
+    // => directly push onto heap
     fn send(&mut self, id: u32, msg: ServerVoice) {
-        let sender = match self.current.get(&id).cloned() {
-            Some(sender) => sender,
+        match self.current.get(&id).cloned() {
+            Some(sender) => {
+                if let Err(mpsc::error::TrySendError::Closed(_)) = sender.send(msg) {
+                    panic!("ded")
+                }
+            }
             None => {
-                tracing::warn!("starting voice for unknown id: {}", id);
-                self.register(id, true)
+                tracing::warn!("dropping voice packet for unknown id: {}", id);
             }
         };
-        tokio::spawn(async move {
-            sender
-                .send(msg)
-                .await
-                .map_err(|_| anyhow::anyhow!("ded"))
-                .unwrap()
-        });
     }
 
-    fn register(&mut self, id: u32, quiet: bool) -> PlayTx {
+    fn register(&mut self, id: u32, announce_quiet: bool) -> PlayTx {
         tracing::info!("Registering voice stream for id: {}", id);
-        let tx = self.player.new_stream(quiet);
+        let tx = self.player.new_stream(announce_quiet);
         self.current.insert(id, tx.clone());
         tx
     }
 
-    fn remove(&mut self, id: u32, quiet: bool) {
+    fn remove(&mut self, id: u32, announce_quiet: bool) {
         tracing::info!("Stopping voice stream for id: {}", id);
         self.current.remove(&id);
-        self.player.stream_ended(quiet);
+        self.player.stream_ended(announce_quiet);
     }
 
     fn mute(&self) {

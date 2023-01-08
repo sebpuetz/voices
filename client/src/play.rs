@@ -1,3 +1,4 @@
+use std::collections::BinaryHeap;
 use std::io::Cursor;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -56,7 +57,7 @@ pub struct Player {
 }
 
 pub enum PlayerEvent {
-    Joined { rx: PlayRx, quiet: bool },
+    Joined { rx: PlayRx, announce_quiet: bool },
     Left { quiet: bool },
     SetVolume(f32),
 }
@@ -85,11 +86,11 @@ impl Player {
         tracing::warn!("output ended");
     }
 
-    pub fn new_stream(&self, quiet: bool) -> PlayTx {
+    pub fn new_stream(&self, announce_quiet: bool) -> PlayTx {
         let (play_tx, rx) = PlayRx::new();
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let _ = tx.send(PlayerEvent::Joined { rx, quiet }).await;
+            let _ = tx.send(PlayerEvent::Joined { rx, announce_quiet }).await;
         });
         play_tx
     }
@@ -117,17 +118,14 @@ pub struct PlayTx {
 }
 
 impl PlayTx {
-    pub async fn send(
-        &self,
-        voice: ServerVoice,
-    ) -> Result<(), mpsc::error::SendError<ServerVoice>> {
-        self.tx.send(voice).await
+    pub fn send(&self, voice: ServerVoice) -> Result<(), mpsc::error::TrySendError<ServerVoice>> {
+        self.tx.try_send(voice)
     }
 }
 
 impl PlayRx {
     pub fn new() -> (PlayTx, Self) {
-        let (tx, rx) = mpsc::channel(10);
+        let (tx, rx) = mpsc::channel(3);
         let tx = PlayTx { tx };
         (tx, Self { rx })
     }
@@ -146,7 +144,7 @@ pub async fn play(
     let mut playing: Option<tokio::task::JoinHandle<()>> = None;
     while let Some(stream) = play_rx.recv().await {
         let quiet = match stream {
-            PlayerEvent::Joined { rx: joined, quiet } => {
+            PlayerEvent::Joined { rx: joined, announce_quiet: quiet } => {
                 tracing::debug!("Received play stream");
                 // FIXME: there can be substantial lag since the `samples` queue will happily accept more data without ever fast forwarding
                 let (tx, samples) = rodio::queue::queue(true);
@@ -183,13 +181,9 @@ pub async fn play(
 
 async fn play_stream(tx: Arc<SourcesQueueInput<f32>>, mut stream: PlayRx) -> anyhow::Result<()> {
     tracing::debug!("Started play stream");
-    let mut state = State::new();
-    let mut decoder =
-        audiopus::coder::Decoder::new(audiopus::SampleRate::Hz48000, audiopus::Channels::Stereo)?;
-    let mut clipper = audiopus::softclip::SoftClip::new(audiopus::Channels::Stereo);
+    let mut state = State::new(tx)?;
+    let mut deadline = Instant::now();
     loop {
-        let mut deadline = Instant::now();
-        deadline += Duration::from_millis(20);
         tokio::select! {
             biased;
             msg = stream.recv() => {
@@ -197,16 +191,16 @@ async fn play_stream(tx: Arc<SourcesQueueInput<f32>>, mut stream: PlayRx) -> any
                     Some(msg) => msg,
                     None => break,
                 };
-                if let Some(voice) = state.push(pack) {
-                    decode_and_submit(Some(&voice.payload), &mut decoder, &mut clipper, &tx)?;
+                if let Some(voice) = state.tick(pack.into()) {
+                    state.decode_and_submit(Some(&voice.payload))?;
+                    deadline += Duration::from_millis(20);
                 }
             }
-            // FIXME: deadline needs to depend on stream time
             _ = tokio::time::sleep_until(deadline.into()) => {
-                let chunks = state.drain().into_iter().flatten();
-                for chunk in chunks {
-                    decode_and_submit(chunk.as_ref().map(|v| &*v.payload), &mut decoder, &mut clipper, &tx)?;
-                }
+                let voice = state.pop();
+                state.decode_and_submit(voice.as_ref().map(|v| &*v.payload))?;
+                deadline += Duration::from_millis(20);
+
             }
         }
     }
@@ -214,140 +208,153 @@ async fn play_stream(tx: Arc<SourcesQueueInput<f32>>, mut stream: PlayRx) -> any
     Ok(())
 }
 
-fn decode_and_submit(
-    payload: Option<&[u8]>,
-    decoder: &mut audiopus::coder::Decoder,
-    clipper: &mut audiopus::softclip::SoftClip,
-    tx: &Arc<SourcesQueueInput<f32>>,
-) -> anyhow::Result<()> {
-    let mut pcm = vec![0f32; 960 * 2];
-    let input = payload.map(TryInto::try_into).transpose().unwrap();
-    let n_samples = {
-        let output = (&mut pcm).try_into().unwrap();
-        match decoder.decode_float(input, output, false) {
-            Ok(n_samples) => n_samples,
-            Err(err) => {
-                tracing::error!(?err);
-                return Ok(());
-            }
-        }
-    };
-    pcm.truncate(n_samples * 2);
-    let signals = (&mut pcm).try_into().unwrap();
-    clipper.apply(signals)?;
-    let src = PcmF32::new(pcm.into_iter(), n_samples);
-    tx.append(src);
-    Ok(())
+#[derive(Clone, PartialEq, Eq)]
+pub struct Voice {
+    sequence: u64,
+    payload: Vec<u8>,
 }
 
-#[derive(Debug)]
-struct State {
-    last: Instant,
-    queue: Vec<ServerVoice>,
-    seq_cutoff: u64,
-}
-
-impl State {
-    fn new() -> Self {
-        State {
-            last: Instant::now(),
-            queue: Vec::with_capacity(10),
-            seq_cutoff: 0,
-        }
-    }
-}
-impl State {
-    fn push(&mut self, voice: ServerVoice) -> Option<ServerVoice> {
-        if voice.sequence == self.seq_cutoff {
-            self.seq_cutoff = voice.sequence + 1;
-            self.last = Instant::now();
-            return Some(voice);
-        }
-
-        // FIXME: need to take stream timestamp into account when determining staleness...
-        let time_since_last = self.last.elapsed();
-        let stale = time_since_last > Duration::from_millis(100);
-        if stale {
-            tracing::warn!("clearing state after receiving 100ms later frame");
-            self.clear();
-        }
-
-        if self.seq_cutoff > voice.sequence {
-            tracing::warn!(
-                "dropping stale voice packet oldest ({}) dropped ({})",
-                self.seq_cutoff,
-                voice.sequence
-            );
-        } else {
-            self.queue.push(voice);
-        }
-
-        self.last = Instant::now();
-        None
-    }
-
-    fn clear(&mut self) {
-        self.queue.clear();
-    }
-
-    fn drain(&mut self) -> Option<Buffered> {
-        if self.queue.len() >= 4 || self.last.elapsed() >= Duration::from_millis(80) {
-            self.queue.sort_by(|v1, v2| v1.sequence.cmp(&v2.sequence));
-            let cur_seq = self.seq_cutoff;
-            if let Some(last) = self.queue.last() {
-                self.seq_cutoff = last.sequence + 1;
-            }
-
-            let mut out = Vec::with_capacity(10);
-            std::mem::swap(&mut out, &mut self.queue);
-            Some(Buffered::new(cur_seq, out))
-        } else {
-            None
+impl From<ServerVoice> for Voice {
+    fn from(value: ServerVoice) -> Self {
+        Voice {
+            sequence: value.sequence,
+            payload: value.payload,
         }
     }
 }
 
-pub struct Buffered {
-    cur_seq: u64,
-    ready: Option<ServerVoice>,
-    inner: std::vec::IntoIter<ServerVoice>,
-}
-
-impl std::fmt::Debug for Buffered {
+impl std::fmt::Debug for Voice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Buffered")
-            .field("cur_seq", &self.cur_seq)
-            .field("ready", &self.ready)
+        f.debug_struct("Voice")
+            .field("sequence", &self.sequence)
+            .field("payload", &format_args!("[len {}]", self.payload.len()))
             .finish()
     }
 }
 
-impl Buffered {
-    pub fn new(cur_seq: u64, inner: Vec<ServerVoice>) -> Self {
-        Self {
-            cur_seq,
-            ready: None,
-            inner: inner.into_iter(),
-        }
+impl Ord for Voice {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.sequence.cmp(&other.sequence)
     }
 }
 
-impl Iterator for Buffered {
-    type Item = Option<ServerVoice>;
+impl PartialOrd for Voice {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.sequence.partial_cmp(&other.sequence)
+    }
+}
 
-    fn next(&mut self) -> Option<Self::Item> {
-        let next = self.ready.take().or_else(|| self.inner.next())?;
-        if self.cur_seq == 0 {
-            self.cur_seq = next.sequence;
-        }
-        let it = if next.sequence == self.cur_seq {
-            Some(Some(next))
+struct State {
+    queue: BinaryHeap<std::cmp::Reverse<Voice>>,
+    decoder: audiopus::coder::Decoder,
+    clipper: audiopus::softclip::SoftClip,
+    next_expected: u64,
+    tx: Arc<SourcesQueueInput<f32>>,
+}
+
+impl std::fmt::Debug for State {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("State")
+            .field("queue", &self.queue)
+            .field("decoder", &self.decoder)
+            .field("clipper", &self.clipper)
+            .field("next_expected", &self.next_expected)
+            .finish()
+    }
+}
+
+impl State {
+    fn new(tx: Arc<SourcesQueueInput<f32>>) -> anyhow::Result<Self> {
+        let decoder = audiopus::coder::Decoder::new(
+            audiopus::SampleRate::Hz48000,
+            audiopus::Channels::Stereo,
+        )?;
+        let clipper = audiopus::softclip::SoftClip::new(audiopus::Channels::Stereo);
+        Ok(State {
+            queue: BinaryHeap::with_capacity(10),
+            next_expected: 0,
+            decoder,
+            clipper,
+            tx,
+        })
+    }
+
+    fn tick(&mut self, voice: Voice) -> Option<Voice> {
+        let ready = voice.sequence == self.next_expected;
+        let n_buffered = self.queue.len();
+
+        tracing::trace!(self.next_expected, voice.sequence);
+        let play = if n_buffered >= 3 {
+            let v = self.pop();
+            self.push(voice);
+            v
+        } else if ready {
+            self.next_expected = voice.sequence + 1;
+            Some(voice)
         } else {
-            self.ready = Some(next);
-            Some(None)
+            self.push(voice);
+            None
         };
-        self.cur_seq = self.cur_seq.wrapping_add(1);
-        it
+
+        play
+    }
+
+    fn push(&mut self, voice: Voice) {
+        let max_seq = self.max_seq();
+        if max_seq.checked_sub(voice.sequence).unwrap_or_default() > 3 {
+            tracing::warn!(
+                max_seq,
+                "stale voice packet already played ({}) vs. arrived ({})",
+                self.next_expected,
+                voice.sequence
+            );
+        }
+
+        self.queue.push(std::cmp::Reverse(voice));
+    }
+
+    fn max_seq(&self) -> u64 {
+        self.queue
+            .iter()
+            .map(|v| v.0.sequence)
+            .max()
+            .unwrap_or_default()
+    }
+
+    fn pop(&mut self) -> Option<Voice> {
+        if let Some(v) = self.queue.pop().map(|v| v.0) {
+            self.next_expected = v.sequence + 1;
+            let max_seq = self.max_seq();
+            if max_seq.checked_sub(v.sequence).unwrap_or_default() > 3 {
+                tracing::info!("more than 3 packet frame gap to freshest");
+            }
+            Some(v)
+        } else {
+            self.next_expected += 1;
+            tracing::trace!(self.next_expected, "empty buffer");
+            None
+        }
+    }
+
+    fn decode_and_submit(&mut self, payload: Option<&[u8]>) -> anyhow::Result<()> {
+        let mut pcm = vec![0f32; 960 * 2];
+        let input = payload.map(TryInto::try_into).transpose().unwrap();
+        let n_samples = {
+            let output = (&mut pcm).try_into().unwrap();
+            match self.decoder.decode_float(input, output, false) {
+                Ok(n_samples) => n_samples,
+                Err(err) => {
+                    tracing::error!(?err);
+                    return Ok(());
+                }
+            }
+        };
+        pcm.truncate(n_samples * 2);
+        let signals = (&mut pcm).try_into().unwrap();
+        self.clipper.apply(signals)?;
+        let src = PcmF32::new(pcm.into_iter(), n_samples);
+        self.tx.append(src);
+        Ok(())
     }
 }
 

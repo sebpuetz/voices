@@ -1,13 +1,11 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use serde::Serialize;
-use tokio::net::TcpStream;
 use tokio::select;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
-use tokio_tungstenite::WebSocketStream;
 use uuid::Uuid;
 use voices_ws_proto::{
     Announce, ClientEvent, Disconnected, Init, JoinError, Left, MessageExt, Present, Ready,
@@ -24,7 +22,7 @@ pub struct ControlStream {
 }
 
 impl ControlStream {
-    pub fn new(ws: WebSocketStream<TcpStream>) -> Self {
+    pub fn new(ws: axum::extract::ws::WebSocket) -> Self {
         let (forward_tx, forward_rx) = mpsc::channel(10);
         let (backward_tx, backward_rx) = mpsc::channel(10);
         tokio::spawn(async move {
@@ -120,7 +118,7 @@ pub enum ControlStreamError {
 }
 
 struct ControlStreamPriv {
-    ws: WebSocketStream<TcpStream>,
+    ws: axum::extract::ws::WebSocket,
     forward: mpsc::Sender<ClientEvent>,
     back: mpsc::Receiver<ServerEvent>,
     send_timeout: Duration,
@@ -129,7 +127,7 @@ struct ControlStreamPriv {
 
 impl ControlStreamPriv {
     pub fn new(
-        ws: WebSocketStream<TcpStream>,
+        ws: axum::extract::ws::WebSocket,
         forward: mpsc::Sender<ClientEvent>,
         back: mpsc::Receiver<ServerEvent>,
     ) -> Self {
@@ -159,7 +157,12 @@ impl ControlStreamPriv {
                             last = Instant::now();
                             continue
                         },
-                        ControlFlow::Stop => return Ok(()),
+                        ControlFlow::Stop => {
+                            let _ = self
+                            .send_timeout
+                            .timeout(self.ws.close()).await;
+                        return Ok(())
+                    }
                     }
                 }
                 back_msg = back => {
@@ -170,7 +173,7 @@ impl ControlStreamPriv {
                 _ = deadline => {
                     tracing::info!("ws deadline for client elapsed, closing");
                     self.back.close();
-                    let _ = self.send_timeout.timeout(self.ws.close(None)).await;
+                    let _ = self.send_timeout.timeout(self.ws.close()).await;
                     return Ok(())
                 }
             }
@@ -179,21 +182,11 @@ impl ControlStreamPriv {
 
     async fn handle_incoming_message(
         &mut self,
-        message: tungstenite::Message,
+        message: axum::extract::ws::Message,
     ) -> Result<ControlFlow, PrivControlStreamError> {
-        if message.is_close() {
+        if matches!(message, axum::extract::ws::Message::Close(_)) {
             tracing::debug!("received close");
-            match self
-                .send_timeout
-                .timeout(self.ws.close(None))
-                .await
-                .map_err(|_| PrivControlStreamError::SendTimeout)?
-            {
-                Ok(_) | Err(tungstenite::Error::ConnectionClosed) => {
-                    return Ok(ControlFlow::Stop);
-                }
-                Err(e) => return Err(e.into()),
-            }
+            return Ok(ControlFlow::Stop);
         }
         let evt = message
             .json()
@@ -207,12 +200,12 @@ impl ControlStreamPriv {
     }
 
     async fn send_json<V: Serialize>(&mut self, payload: &V) -> Result<(), PrivControlStreamError> {
-        let msg = tungstenite::Message::Text(serde_json::to_string(payload).unwrap());
+        let msg = axum::extract::ws::Message::Text(serde_json::to_string(payload).unwrap());
         self.send_timeout
             .timeout(self.ws.send(msg))
             .await
             .map_err(|_| PrivControlStreamError::SendTimeout)?
-            .map_err(PrivControlStreamError::StreamError)?;
+            .map_err(PrivControlStreamError::AxumError)?;
         Ok(())
     }
 }
@@ -224,10 +217,12 @@ enum PrivControlStreamError {
     #[error("stream closed")]
     StreamClosed,
     #[error("stream error: {0}")]
+    AxumError(#[from] axum::Error),
+    #[error("stream error: {0}")]
     StreamError(#[from] tungstenite::Error),
-    #[error("deser error: {msg}, {src:?}")]
+    #[error("deser error: {msg:?}, {src:?}")]
     DeserError {
-        msg: tungstenite::Message,
+        msg: axum::extract::ws::Message,
         #[source]
         src: serde_json::Error,
     },
@@ -236,7 +231,7 @@ enum PrivControlStreamError {
 }
 
 impl PrivControlStreamError {
-    fn deser(msg: tungstenite::Message, e: serde_json::Error) -> Self {
+    fn deser(msg: axum::extract::ws::Message, e: serde_json::Error) -> Self {
         PrivControlStreamError::DeserError { msg, src: e }
     }
 }
