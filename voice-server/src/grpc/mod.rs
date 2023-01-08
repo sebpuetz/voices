@@ -24,6 +24,16 @@ impl VoiceServerImpl {
 
 #[async_trait]
 impl proto::voice_server_server::VoiceServer for VoiceServerImpl {
+    async fn assign_channel(
+        &self,
+        request: tonic::Request<proto::AssignChannelRequest>,
+    ) -> Result<tonic::Response<proto::AssignChannelResponse>, tonic::Status> {
+        let req = request.into_inner();
+        let channel_id = parse(&req.channel_id, "channel_id")?;
+        self.get_or_create_channel(channel_id).await;
+        Ok(tonic::Response::new(proto::AssignChannelResponse {}))
+    }
+
     async fn open_connection(
         &self,
         request: tonic::Request<proto::OpenConnectionRequest>,
@@ -58,7 +68,7 @@ impl proto::voice_server_server::VoiceServer for VoiceServerImpl {
         let req = request.into_inner();
         let client_id = parse(&req.user_id, "user_id")?;
         let channel_id = parse(&req.channel_id, "channel_id")?;
-        let room = self.room(channel_id).await;
+        let room = self.get_or_create_channel(channel_id).await;
         room.leave(client_id)
             .await
             .ok_or_else(|| Status::not_found("client is not connected"))?;
@@ -73,7 +83,7 @@ impl proto::voice_server_server::VoiceServer for VoiceServerImpl {
         let req = request.into_inner();
         let client_id = parse(&req.user_id, "user_id")?;
         let channel_id = parse(&req.channel_id, "channel_id")?;
-        let room = self.room(channel_id).await;
+        let room = self.get_or_create_channel(channel_id).await;
         let ctl = room.peer(client_id).await?;
         let status = match ctl.status().await {
             Err(_) => {
@@ -93,6 +103,29 @@ impl proto::voice_server_server::VoiceServer for VoiceServerImpl {
             status: Some(status),
         }))
     }
+
+    async fn status(
+        &self,
+        request: tonic::Request<proto::StatusRequest>,
+    ) -> Result<tonic::Response<proto::StatusResponse>, tonic::Status> {
+        let req = request.into_inner();
+        let channel_id = parse(&req.channel_id, "channel_id")?;
+        let room = self
+            .get_channel(channel_id)
+            .await
+            .ok_or_else(|| tonic::Status::not_found("channel not hosted here"))?;
+        let peers = room.peers().await;
+        Ok(tonic::Response::new(proto::StatusResponse {
+            info: peers
+                .into_iter()
+                .map(|(client_id, src_id, user_name)| proto::ClientInfo {
+                    client_id: client_id.to_string(),
+                    src_id,
+                    name: user_name,
+                })
+                .collect(),
+        }))
+    }
 }
 
 impl From<OpenConnectionError> for tonic::Status {
@@ -100,6 +133,9 @@ impl From<OpenConnectionError> for tonic::Status {
         match value {
             OpenConnectionError::NoOpenPorts => tonic::Status::unavailable("server full"),
             OpenConnectionError::Other(_) => tonic::Status::internal("internal error"),
+            OpenConnectionError::ChannelNotFound => {
+                tonic::Status::not_found("channel not hosted here")
+            }
         }
     }
 }
@@ -127,6 +163,7 @@ impl TryFrom<proto::OpenConnectionRequest> for OpenConnection {
         let client_id = parse(&req.user_id, "user_id")?;
         let channel_id = parse(&req.channel_id, "channel_id")?;
         Ok(OpenConnection {
+            user_name: req.user_name,
             channel_id,
             client_id,
         })

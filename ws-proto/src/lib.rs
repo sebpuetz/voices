@@ -107,3 +107,15 @@ impl MessageExt for tungstenite::Message {
         }
     }
 }
+
+#[cfg(feature = "axum")]
+impl MessageExt for axum::extract::ws::Message {
+    fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Text(string) => string.as_bytes(),
+            Self::Binary(data) | Self::Ping(data) | Self::Pong(data) => data,
+            Self::Close(None) => &[],
+            Self::Close(Some(frame)) => frame.reason.as_bytes(),
+        }
+    }
+}

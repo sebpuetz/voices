@@ -1,6 +1,8 @@
 use std::net::IpAddr;
+use std::sync::Arc;
 
 use anyhow::Context;
+use voices_channels::grpc::proto::channels_server::Channels;
 
 use crate::{Ports, VoiceServerImpl};
 
@@ -28,9 +30,9 @@ impl VoiceServerConfig {
             .ip())
     }
 
-    pub async fn server(&self) -> anyhow::Result<VoiceServerImpl> {
+    pub async fn server(&self, channels: Arc<dyn Channels>) -> anyhow::Result<VoiceServerImpl> {
         let ip = self.udp_host().await?;
         let ports = self.udp_ports();
-        Ok(VoiceServerImpl::new(ip, ports))
+        Ok(VoiceServerImpl::new(ip, ports, channels))
     }
 }

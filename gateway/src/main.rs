@@ -1,18 +1,25 @@
+pub mod rest_api;
 pub mod server;
 mod util;
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
-use clap::Parser;
+use axum::extract::ws::WebSocket;
+use clap::{CommandFactory, FromArgMatches, Parser};
+use rest_api::{new_channel, servers};
+use server::channel_registry::ChannelRegistry;
+use server::channel_state::{ChannelState, LocalChannelEvents, RedisChannelEvents};
 use server::session::ServerSession;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tracing::subscriber::set_global_default;
-use tracing::Instrument;
+// use tracing::Instrument;
 use tracing_log::LogTracer;
 use tracing_subscriber::prelude::*;
 use voice_server::config::VoiceServerConfig;
-use voice_server::VoiceServer;
+use voices_channels::ChannelsConfig;
 
+use crate::server::channel_registry::{DistributedChannelRegistry, LocalChannelRegistry};
 use crate::server::channels::Channels;
 
 #[derive(Parser)]
@@ -21,11 +28,24 @@ use crate::server::channels::Channels;
 struct Config {
     #[clap(long, default_value_t = 33332)]
     ws_listen_port: u16,
-    // FIXME: voice_config and voice_server_addr should be mutually exclusive...
-    #[clap(long)]
-    voice_server_addr: Option<String>,
-    #[clap(flatten)]
-    voice_config: VoiceServerConfig,
+    #[clap(subcommand)]
+    setup: SetupSubcommand,
+}
+
+#[derive(Debug, Parser)]
+enum SetupSubcommand {
+    Distributed {
+        #[clap(long, default_value = "http://localhost:33330")]
+        channels_addr: String,
+        #[clap(long, default_value = "redis://127.0.0.1:6379/")]
+        redis_conn: String,
+    },
+    Standalone {
+        #[clap(flatten)]
+        voice_config: VoiceServerConfig,
+        #[clap(flatten)]
+        channels_config: ChannelsConfig,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -48,57 +68,116 @@ async fn main_() -> anyhow::Result<()> {
             .with(tracing_subscriber::fmt::layer()),
     )?;
     LogTracer::init()?;
-    let config = Config::parse();
+    let matches = Config::into_app()
+        .dont_collapse_args_in_usage(true)
+        .get_matches();
+    let config = Config::from_arg_matches(&matches)?;
     let tcp_addr = SocketAddr::from(([0, 0, 0, 0], config.ws_listen_port));
     let ctl_listener = tokio::net::TcpListener::bind(tcp_addr).await?;
     tracing::info!("Control listening on {}", ctl_listener.local_addr()?);
-    let channels = Channels::new();
-    match config.voice_server_addr {
-        Some(addr) => {
-            // FIXME lazy connect
-            let client =
-                voice_server::grpc::proto::voice_server_client::VoiceServerClient::connect(addr)
-                    .await?;
-            run_server(client, ctl_listener, channels).await
+    match config.setup {
+        SetupSubcommand::Distributed {
+            channels_addr,
+            redis_conn,
+        } => {
+            let mgr = deadpool_redis::Manager::new(redis_conn)?;
+            let pool = deadpool_redis::Pool::builder(mgr).build()?;
+            let room_init = move |id, channels| {
+                let pool = pool.clone();
+                async move { RedisChannelEvents::new(id, pool, channels).await }
+            };
+            let registry = DistributedChannelRegistry::new(channels_addr.parse()?);
+            let channels = Channels::new(room_init, registry);
+
+            serve(ctl_listener, channels).await
         }
-        None => run_server(config.voice_config.server().await?, ctl_listener, channels).await,
+        SetupSubcommand::Standalone {
+            voice_config,
+            channels_config,
+        } => {
+            let room_init = |id, channels| async move {
+                Ok(LocalChannelEvents::new(
+                    id,
+                    tokio::sync::broadcast::channel(100).0,
+                    channels,
+                ))
+            };
+            let channels_impl = channels_config.server()?;
+            let voice = voice_config.server(Arc::new(channels_impl.clone())).await?;
+            let local_registry = LocalChannelRegistry::new(channels_impl, voice);
+            let channels = Channels::new(room_init, local_registry);
+            serve(ctl_listener, channels).await
+        }
     }
 }
 
-async fn run_server<V: VoiceServer + Clone>(
-    voice_handle: V,
-    ctl_listener: TcpListener,
-    channels: Channels,
-) -> anyhow::Result<()> {
-    loop {
-        tracing::debug!("waiting for tcp connection");
-        let (inc, addr) = ctl_listener.accept().await?;
-        tracing::debug!("accepted tcp connection from {}", addr);
-        let channels = channels.clone();
-        let span = tracing::span!(tracing::Level::INFO, "session", addr=%addr,);
-        let voice_server = voice_handle.clone();
-        tokio::spawn(
-            async move {
-                if let Err(e) = handle_session(inc, channels, voice_server).await {
-                    tracing::warn!("session ended with error: {}", e);
-                } else {
-                    tracing::info!("session ended");
-                }
-            }
-            .instrument(span),
-        );
-    }
-}
-
-async fn handle_session<V>(
-    inc: TcpStream,
-    channels: Channels,
-    voice_server: V,
-) -> anyhow::Result<()>
+async fn serve<S, R>(ctl_listener: TcpListener, channels: Channels<S, R>) -> anyhow::Result<()>
 where
-    V: VoiceServer + Clone,
+    R: ChannelRegistry,
+    S: ChannelState,
 {
-    ServerSession::init(inc, voice_server, channels)
+    let router = axum::Router::new()
+        .route("/", axum::routing::get(websocket_handler))
+        .route("/channels", axum::routing::post(new_channel))
+        .route("/channels/:id", axum::routing::get(rest_api::get_channel))
+        .route("/servers", axum::routing::get(servers))
+        .route("/servers/:id", axum::routing::get(rest_api::get_server))
+        .route("/servers", axum::routing::post(rest_api::new_server))
+        .with_state(AppState { channels });
+    let srv = axum::Server::from_tcp(ctl_listener.into_std()?)?.serve(router.into_make_service());
+    srv.await?;
+    Ok(())
+    // loop {
+    //     tracing::debug!("waiting for tcp connection");
+    //     let (inc, addr) = ctl_listener.accept().await?;
+    //     tracing::debug!("accepted tcp connection from {}", addr);
+    //     let channels = channels.clone();
+    //     let span = tracing::span!(tracing::Level::INFO, "session", addr=%addr,);
+    //     tokio::spawn(
+    //         async move {
+    //             if let Err(e) = handle_session(inc, channels).await {
+    //                 tracing::warn!("session ended with error: {}", e);
+    //             } else {
+    //                 tracing::info!("session ended");
+    //             }
+    //         }
+    //         .instrument(span),
+    //     );
+    // }
+}
+
+#[derive(Clone)]
+pub struct AppState<S, R>
+where
+    R: ChannelRegistry,
+    S: ChannelState,
+{
+    channels: Channels<S, R>,
+}
+
+async fn websocket_handler<S, R>(
+    ws: axum::extract::ws::WebSocketUpgrade,
+    axum::extract::State(state): axum::extract::State<AppState<S, R>>,
+) -> impl axum::response::IntoResponse
+where
+    R: ChannelRegistry,
+    S: ChannelState,
+{
+    ws.on_upgrade(|socket| async move {
+        if let Err(e) = handle_session(socket, state.channels).await {
+            tracing::warn!("session ended with error: {}", e);
+        } else {
+            tracing::info!("session ended");
+        }
+    })
+}
+
+async fn handle_session<R, S>(socket: WebSocket, channels: Channels<S, R>) -> anyhow::Result<()>
+where
+    R: ChannelRegistry,
+    S: ChannelState,
+{
+    ServerSession::init(socket, channels)
         .await?
         .run_session()
         .await?;

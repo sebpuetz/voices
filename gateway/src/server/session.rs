@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use anyhow::Context;
 use futures_util::{Future, FutureExt};
-use tokio::net::TcpStream;
 use tokio::select;
 use tracing::Instrument;
 use uuid::Uuid;
@@ -12,10 +11,11 @@ use voice_server::grpc::{proto, tonic};
 use voice_server::VoiceServer;
 use voices_ws_proto::{ClientEvent, Init, Join, Present};
 
-use crate::server::channels::{ChannelEvent, ChannelEventKind, Channels, Chatroom, ClientInfo};
+use crate::server::channels::{Channel, ChannelEvent, ChannelEventKind, Channels, ClientInfo};
 use crate::server::ws::ControlStream;
-use crate::util::TimeoutExt;
 
+use super::channel_state::ChannelState;
+use super::channel_registry::ChannelRegistry;
 use super::channels::ChatRoomJoined;
 use super::ws::ControlStreamError;
 
@@ -24,34 +24,36 @@ use super::ws::ControlStreamError;
 /// Owns a handle to a [`VoiceServer`] and the known [`Channels`].
 ///
 /// Has a [`VoiceHandle`] if the client is currently in a channel.
-pub struct ServerSession<V: VoiceServer + Clone> {
+pub struct ServerSession<R, S>
+where
+    R: ChannelRegistry,
+    S: ChannelState,
+{
     // client info, received in init msg
     client_id: Uuid,
     client_name: String,
     // eventloop / backwards chan
     ctl: ControlStream,
     // optionally connected channel
-    voice: Option<VoiceHandle<V>>,
+    voice: Option<VoiceHandle<R::Voice, S>>,
 
-    // server handles
-    voice_server_handle: V,
     // channel registry
-    channels: Channels,
+    channels: Channels<S, R>,
 }
 
-impl<V: VoiceServer + Clone> ServerSession<V> {
+impl<R, S> ServerSession<R, S>
+where
+    R: ChannelRegistry,
+    S: ChannelState,
+{
     /// Initialize the session on the incoming stream.
     ///
     /// Waits for the client handshake.
     #[tracing::instrument(skip_all)]
     pub async fn init(
-        ctl: TcpStream,
-        voice_server_handle: V,
-        channels: Channels,
+        ctl: axum::extract::ws::WebSocket,
+        channels: Channels<S, R>,
     ) -> anyhow::Result<Self> {
-        let ctl = Duration::from_millis(500)
-            .timeout(tokio_tungstenite::accept_async(ctl))
-            .await??;
         let mut ctl = ControlStream::new(ctl);
         tracing::debug!("waiting for handshake");
         let Init { user_id, name } = ctl.await_handshake().await?;
@@ -60,7 +62,6 @@ impl<V: VoiceServer + Clone> ServerSession<V> {
             ctl,
             client_id: user_id,
             client_name: name,
-            voice_server_handle,
             channels,
             voice: None,
         })
@@ -137,7 +138,7 @@ impl<V: VoiceServer + Clone> ServerSession<V> {
             ClientEvent::Join(Join { channel_id }) => {
                 tracing::info!("joining {}", channel_id);
                 self.stop_voice().await;
-                let room = self.channels.get_or_create(channel_id);
+                let room = self.channels.get_or_init(channel_id).await?;
                 let room_id = room.id();
                 if let Some(voice) = self.initialize_voice_connection(room).await? {
                     self.voice = Some(voice);
@@ -176,23 +177,29 @@ impl<V: VoiceServer + Clone> ServerSession<V> {
     /// 4. Provide client info to voice server to let it initialize the connection.
     pub async fn initialize_voice_connection(
         &mut self,
-        room: Chatroom,
-    ) -> anyhow::Result<Option<VoiceHandle<V>>> {
+        mut channel: Channel<S, R::Voice>,
+    ) -> anyhow::Result<Option<VoiceHandle<R::Voice, S>>> {
         tracing::debug!("announcing udp");
         // should return source_id
-        let channel_id = room.id();
+        let channel_id = channel.id();
         let client_id = self.client_id;
-        let req = proto::OpenConnectionRequest {
+        let msg = proto::OpenConnectionRequest {
             user_name: self.client_name.clone(),
             user_id: self.client_id.to_string(),
             channel_id: channel_id.to_string(),
         };
-        let req = tonic::Request::new(req);
-        let resp = match self.voice_server_handle.open_connection(req).await {
+        let req = tonic::Request::new(msg.clone());
+        let resp = match channel.voice().open_connection(req).await {
             Ok(o) => o.into_inner(),
             Err(e) => {
-                tracing::warn!("open conn failed {:?}", e);
-                return Err(e.into());
+                if e.code() == tonic::Code::NotFound {
+                    channel = self.channels.reassign_voice(channel_id).await?;
+                    let req = tonic::Request::new(msg);
+                    channel.voice().open_connection(req).await?.into_inner()
+                } else {
+                    tracing::warn!("open conn failed {:?}", e);
+                    return Err(e.into());
+                }
             }
         };
         let addr = resp.udp_sock.context("Missing response field")?;
@@ -217,9 +224,10 @@ impl<V: VoiceServer + Clone> ServerSession<V> {
             }),
         };
         let req = tonic::Request::new(req);
-        let resp = match self.voice_server_handle.establish_session(req).await {
+        let resp = match channel.voice().establish_session(req).await {
             Ok(o) => o.into_inner(),
             Err(e) => {
+                if e.code() == tonic::Code::NotFound {}
                 tracing::warn!("open conn failed {:?}", e);
                 return Err(e.into());
             }
@@ -227,17 +235,28 @@ impl<V: VoiceServer + Clone> ServerSession<V> {
         let source_id = resp.src_id;
         let crypt_key = base64::encode(resp.crypt_key).into();
         tracing::debug!("successfully notified udp task");
-
-        let present = room
-            .list()
-            .into_iter()
-            .filter_map(|v| {
-                (v.source_id != source_id).then_some(Present {
-                    user: v.name,
-                    source_id: v.source_id,
+        let req = proto::StatusRequest {
+            channel_id: channel_id.to_string(),
+        };
+        let status_request = tonic::Request::new(req);
+        let present = match channel.voice().status(status_request).await {
+            Ok(o) => o
+                .into_inner()
+                .info
+                .into_iter()
+                .filter_map(|v| {
+                    (v.client_id.parse::<Uuid>().ok()? != client_id).then_some(Present {
+                        user: v.name,
+                        source_id: v.src_id,
+                    })
                 })
-            })
-            .collect();
+                .collect(),
+            Err(e) => {
+                tracing::warn!("list present failed {:?}", e);
+                return Err(e.into());
+            }
+        };
+
         let ready = voices_ws_proto::Ready {
             id: channel_id,
             src_id: source_id,
@@ -245,14 +264,14 @@ impl<V: VoiceServer + Clone> ServerSession<V> {
             crypt_key,
         };
         self.ctl.voice_ready(ready).await?;
-        let voice_handle = self.voice_server_handle.clone();
+        let voice_handle = channel.voice().clone();
         let status_handle = status_check(voice_handle.clone(), client_id, channel_id);
         let info = ClientInfo {
             client_id,
             source_id,
             name: self.client_name.clone(),
         };
-        let room_handle = room.join(info);
+        let room_handle = channel.join(info).await?;
         Ok(Some(VoiceHandle {
             client_id,
             channel_id,
@@ -314,16 +333,24 @@ fn status_check<V: VoiceServer>(
 }
 
 #[allow(unused)]
-pub struct VoiceHandle<V: VoiceServer + Clone> {
+pub struct VoiceHandle<V, S>
+where
+    V: VoiceServer + Clone,
+    S: ChannelState,
+{
     client_id: Uuid,
     channel_id: Uuid,
     status_handle: tokio::task::JoinHandle<()>,
     voice_server: V,
-    room_handle: ChatRoomJoined,
+    room_handle: ChatRoomJoined<S>,
     source_id: u32,
 }
 
-impl<V: VoiceServer + Clone + Unpin> Future for VoiceHandle<V> {
+impl<V, S> Future for VoiceHandle<V, S>
+where
+    V: VoiceServer + Clone + Unpin,
+    S: ChannelState + Unpin,
+{
     type Output = anyhow::Result<()>;
 
     fn poll(
@@ -334,7 +361,11 @@ impl<V: VoiceServer + Clone + Unpin> Future for VoiceHandle<V> {
     }
 }
 
-impl<V: VoiceServer + Clone> Drop for VoiceHandle<V> {
+impl<V, S> Drop for VoiceHandle<V, S>
+where
+    V: VoiceServer + Clone,
+    S: ChannelState,
+{
     fn drop(&mut self) {
         let req = tonic::Request::new(proto::LeaveRequest {
             user_id: self.client_id.to_string(),

@@ -1,117 +1,220 @@
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
-use tokio::sync::broadcast;
+use anyhow::Context;
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
+use voice_server::VoiceServer;
 
-#[derive(Clone, Debug)]
+use super::channel_registry::ChannelRegistry;
+use super::channel_state::ChannelState;
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ClientInfo {
     pub client_id: Uuid,
     pub source_id: u32,
     pub name: String,
 }
 
-/// In-memory representation of channels
-#[derive(Default, Clone)]
-pub struct Channels {
-    inner: Arc<RwLock<HashMap<Uuid, Chatroom>>>,
+#[async_trait]
+pub trait ChannelInit<S, R>: Send + Sync + 'static
+where
+    S: ChannelState,
+    R: ChannelRegistry,
+{
+    async fn init(&self, uuid: Uuid, channels: Channels<S, R>) -> anyhow::Result<S>;
 }
 
-impl Channels {
-    pub fn new() -> Self {
+#[async_trait]
+impl<F, Fut, S, R> ChannelInit<S, R> for F
+where
+    F: 'static + Send + Sync + Fn(Uuid, Channels<S, R>) -> Fut,
+    Fut: Send + std::future::Future<Output = anyhow::Result<S>>,
+    S: ChannelState,
+    R: ChannelRegistry,
+{
+    async fn init(&self, uuid: Uuid, channels: Channels<S, R>) -> anyhow::Result<S> {
+        (self)(uuid, channels).await
+    }
+}
+
+/// In-memory representation of channels
+#[derive(Clone)]
+pub struct Channels<S, R>
+where
+    S: ChannelState,
+    R: ChannelRegistry,
+{
+    registry: R,
+    // channels with sessions on this instance
+    inner: Arc<RwLock<HashMap<Uuid, Channel<S, R::Voice>>>>,
+    channel_init: Arc<dyn ChannelInit<S, R>>,
+}
+
+impl<S, R> Channels<S, R>
+where
+    S: ChannelState,
+    R: ChannelRegistry,
+{
+    pub fn new<F>(room_init: F, registry: R) -> Self
+    where
+        F: ChannelInit<S, R>,
+    {
         Self {
             inner: Arc::default(),
+            channel_init: Arc::new(room_init),
+            registry,
         }
     }
 
-    pub fn get_or_create(&self, id: Uuid) -> Chatroom {
-        if let Some(room) = self.inner.read().unwrap().get(&id) {
-            return room.clone();
+    /// Retrieve the locally running instance of
+    pub async fn get_or_init(&self, id: Uuid) -> anyhow::Result<Channel<S, R::Voice>>
+    where
+        R: 'static,
+    {
+        if let Some(room) = self.inner.read().await.get(&id) {
+            return Ok(room.clone());
         }
-        let room = Chatroom::new(id);
-        self.inner.write().unwrap().insert(id, room.clone());
-        room
+        let voice = self
+            .registry
+            .get_voice(id, false)
+            .await?
+            .context("no voice server available")?;
+        let state = self.channel_init.init(id, self.clone()).await?;
+        let room = Channel::new(id, state, voice).await?;
+        let r = self.inner.write().await.entry(id).or_insert(room).clone();
+        Ok(r)
+    }
+
+    // FIXME: send reassign event
+    pub async fn reassign_voice(&self, channel_id: Uuid) -> anyhow::Result<Channel<S, R::Voice>> {
+        let voice = self
+            .registry
+            .get_voice(channel_id, true)
+            .await?
+            .context("no voice server available")?;
+        match self.inner.write().await.entry(channel_id) {
+            std::collections::hash_map::Entry::Occupied(mut o) => {
+                let chan = o.get_mut();
+                chan.voice = voice;
+                Ok(chan.clone())
+            }
+            std::collections::hash_map::Entry::Vacant(v) => {
+                let state = self.channel_init.init(channel_id, self.clone()).await?;
+                let room = Channel::new(channel_id, state, voice).await?;
+                Ok(v.insert(room).to_owned())
+            }
+        }
+    }
+
+    pub async fn close(&self, id: Uuid) -> Option<Uuid> {
+        self.inner.write().await.remove(&id).map(|_| id)
+    }
+
+    pub fn registry(&self) -> &R {
+        &self.registry
     }
 }
 
-/// Chatroom representation
+/// Channel representation
 ///
 /// Offers a broadcast sender for channel events, a list of present users by ID and a voice sender
 #[derive(Clone)]
-pub struct Chatroom {
+pub struct Channel<S, V>
+where
+    S: ChannelState,
+    V: VoiceServer + Clone,
+{
     room_id: Uuid,
-    notify: broadcast::Sender<ChannelEvent>,
-    present: Arc<RwLock<HashMap<Uuid, ClientInfo>>>,
+    state: S,
+    voice: V,
 }
 
-impl Chatroom {
-    pub fn new(id: Uuid) -> Self {
+impl<S, V> Channel<S, V>
+where
+    S: ChannelState,
+    V: VoiceServer + Clone,
+{
+    pub async fn new(id: Uuid, state: S, voice: V) -> anyhow::Result<Self> {
         let slf = Self {
             room_id: id,
-            notify: broadcast::channel(100).0,
-            present: Arc::default(),
+            state,
+            voice,
         };
-        let present = slf.present.clone();
-        let mut updates = slf.updates();
-        tokio::spawn(async move {
-            while let Ok(ChannelEvent {
-                source,
-                source_id,
-                kind,
-            }) = updates.recv().await
-            {
-                match kind {
-                    ChannelEventKind::Joined(name) => {
-                        present.write().unwrap().insert(
-                            source,
-                            ClientInfo {
-                                client_id: source,
-                                source_id,
-                                name,
-                            },
-                        );
-                    }
-                    ChannelEventKind::Left(_) => {
-                        present.write().unwrap().remove(&source);
-                    }
-                }
-            }
-        });
-        slf
+        Ok(slf)
     }
 
-    pub fn updates(&self) -> broadcast::Receiver<ChannelEvent> {
-        self.notify.subscribe()
+    pub async fn updates(&self) -> anyhow::Result<broadcast::Receiver<ChannelEvent>> {
+        self.state.subscribe().await
     }
 
-    pub fn list(&self) -> Vec<ClientInfo> {
-        self.present.read().unwrap().values().cloned().collect()
-    }
-
-    pub fn join(&self, info: ClientInfo) -> ChatRoomJoined {
-        let ClientInfo {
-            client_id,
-            source_id,
-            name,
-        } = info;
-        let _ = self
-            .notify
-            .send(ChannelEvent::joined(client_id, name.clone(), source_id));
-        ChatRoomJoined::new(self.notify.clone(), client_id, source_id, name)
+    pub async fn join(&self, info: ClientInfo) -> anyhow::Result<ChatRoomJoined<S>> {
+        let updates = self.updates().await?;
+        let _ = self.state.join(info.clone()).await;
+        Ok(ChatRoomJoined::new(self.state.clone(), updates, info))
     }
 
     pub fn id(&self) -> Uuid {
         self.room_id
     }
+
+    pub fn voice(&self) -> &V {
+        &self.voice
+    }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
+pub struct LocallyPresent<S, R>
+where
+    S: ChannelState,
+    R: ChannelRegistry,
+{
+    id: Uuid,
+    present: Arc<RwLock<HashMap<Uuid, ClientInfo>>>,
+    channels: Channels<S, R>,
+}
+
+impl<S, R> LocallyPresent<S, R>
+where
+    S: ChannelState,
+    R: ChannelRegistry,
+{
+    pub fn new(id: Uuid, channels: Channels<S, R>) -> Self {
+        Self {
+            id,
+            present: Arc::default(),
+            channels,
+        }
+    }
+
+    pub async fn join(&self, info: ClientInfo) {
+        self.present.write().await.insert(info.client_id, info);
+    }
+
+    pub async fn leave(&self, client_id: Uuid) {
+        let mut guard = self.present.write().await;
+        guard.remove(&client_id);
+        if guard.is_empty() {
+            tracing::info!(channel_id=?self.id, "last client left, closing");
+            self.channels.close(self.id).await.unwrap();
+            return;
+        }
+    }
+
+    pub async fn list(&self) -> Vec<ClientInfo> {
+        self.present.read().await.values().cloned().collect()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ChannelEventKind {
     Joined(String),
     Left(String),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChannelEvent {
     source: Uuid,
     source_id: u32,
@@ -147,27 +250,24 @@ impl ChannelEvent {
     }
 }
 
-pub struct ChatRoomJoined {
-    leave_tx: broadcast::Sender<ChannelEvent>,
+pub struct ChatRoomJoined<S>
+where
+    S: ChannelState,
+{
+    leave_tx: Option<S>,
     updates: broadcast::Receiver<ChannelEvent>,
-    source_id: u32,
-    client_id: Uuid,
-    name: String,
+    info: ClientInfo,
 }
 
-impl ChatRoomJoined {
-    fn new(
-        leave_tx: broadcast::Sender<ChannelEvent>,
-        client_id: Uuid,
-        source_id: u32,
-        name: String,
-    ) -> Self {
+impl<S> ChatRoomJoined<S>
+where
+    S: ChannelState,
+{
+    fn new(leave_tx: S, updates: broadcast::Receiver<ChannelEvent>, info: ClientInfo) -> Self {
         Self {
-            source_id,
-            updates: leave_tx.subscribe(),
-            client_id,
-            leave_tx,
-            name,
+            info,
+            updates,
+            leave_tx: Some(leave_tx),
         }
     }
 
@@ -176,20 +276,24 @@ impl ChatRoomJoined {
     }
 
     pub fn source_id(&self) -> u32 {
-        self.source_id
+        self.info.source_id
     }
 
     pub fn id(&self) -> Uuid {
-        self.client_id
+        self.info.client_id
     }
 }
 
-impl Drop for ChatRoomJoined {
+impl<S> Drop for ChatRoomJoined<S>
+where
+    S: ChannelState,
+{
     fn drop(&mut self) {
-        let _ = self.leave_tx.send(ChannelEvent::left(
-            self.client_id,
-            self.name.clone(),
-            self.source_id,
-        ));
+        if let Some(tx) = self.leave_tx.take() {
+            let info = self.info.clone();
+            tokio::spawn(async move {
+                let _ = tx.leave(info).await;
+            });
+        }
     }
 }

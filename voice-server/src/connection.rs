@@ -16,6 +16,8 @@ use crate::ports::PortRef;
 
 #[derive(Clone, Debug)]
 pub struct VoiceControl {
+    source_id: u32,
+    user_name: String,
     tx: mpsc::Sender<ControlRequest>,
 }
 
@@ -52,6 +54,14 @@ impl VoiceControl {
                 tracing::info!("voice task already stopped");
             }
         }
+    }
+
+    pub fn source_id(&self) -> u32 {
+        self.source_id
+    }
+
+    pub fn user_name(&self) -> &str {
+        self.user_name.as_ref()
     }
 }
 
@@ -184,6 +194,7 @@ pub struct VoiceConnection {
 impl VoiceConnection {
     pub async fn start(
         client_id: Uuid,
+        user_name: String,
         port: PortRef,
         voice_tx: broadcast::Sender<(u32, voice_proto::Voice)>,
         host_ip: IpAddr,
@@ -210,11 +221,11 @@ impl VoiceConnection {
         };
         let handle = tokio::spawn(slf.run().instrument(tracing::Span::current()));
         let task = VoiceTask::new(handle, client_id);
-        let tx = VoiceControl { tx };
+        let tx = VoiceControl { source_id, user_name, tx };
         Ok((tx, task))
     }
 
-    #[tracing::instrument(name="voice_run", skip(self), fields(source_id=%self.source_id))]
+    #[tracing::instrument(name="voice_run", skip(self), fields(client_id=%self.client_id, source_id=%self.source_id))]
     pub async fn run(mut self) {
         // FIXME: timeout
         let mut init_timeout = Box::pin(tokio::time::sleep(Duration::from_secs(15)));

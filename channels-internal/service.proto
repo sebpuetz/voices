@@ -1,0 +1,71 @@
+syntax = "proto3";
+
+package voice_channels.v1;
+
+service Channels {
+  rpc CreateServer(CreateServerRequest) returns (CreateServerResponse) {}
+  rpc GetServer(GetServerRequest) returns (GetServerResponse) {}
+  rpc GetServers(GetServersRequest) returns (GetServersResponse) {}
+  rpc CreateChannel(CreateChannelRequest) returns (CreateChannelResponse) {}
+  rpc GetChannel(GetChannelRequest) returns (GetChannelResponse) {}
+  rpc AssignChannel(AssignChannelRequest) returns (AssignChannelResponse) {}
+  rpc UnassignChannel(UnassignChannelRequest)
+      returns (UnassignChannelResponse) {}
+}
+
+message GetServersRequest {
+  optional int64 per_page = 1;
+  optional int64 page = 2;
+}
+
+message GetServersResponse {
+  message ServerInfo {
+    string server_id = 1;
+    string name = 2;
+  }
+  repeated ServerInfo info = 1;
+  int64 pages = 2;
+}
+
+message GetServerRequest { string server_id = 1; }
+
+message GetServerResponse {
+  string server_id = 1;
+  string name = 2;
+  repeated ChannelInfo channels = 3;
+}
+
+message ChannelInfo {
+  string channel_id = 1;
+  string name = 2;
+}
+
+message CreateServerRequest { string name = 1; }
+
+message CreateServerResponse { string server_id = 1; }
+
+message CreateChannelRequest {
+  string server_id = 1;
+  string name = 2;
+}
+
+message CreateChannelResponse { string channel_id = 1; }
+
+message GetChannelRequest { string channel_id = 1; }
+
+message GetChannelResponse {
+  string channel_id = 1;
+  string name = 2;
+  optional string voice_server_host = 3;
+}
+
+message AssignChannelRequest {
+  string channel_id = 1;
+  bool reassign = 2;
+}
+
+message AssignChannelResponse { string voice_server_host = 1; }
+
+message UnassignChannelRequest { string channel_id = 1; }
+
+message UnassignChannelResponse {}
