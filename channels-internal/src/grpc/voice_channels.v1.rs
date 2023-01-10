@@ -1,5 +1,25 @@
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CleanupStaleVoiceServersRequest {}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CleanupStaleVoiceServersResponse {
+    #[prost(string, repeated, tag = "1")]
+    pub deleted: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RegisterVoiceServerRequest {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub addr: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RegisterVoiceServerResponse {}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetServersRequest {
     #[prost(int64, optional, tag = "1")]
     pub per_page: ::core::option::Option<i64>,
@@ -316,6 +336,47 @@ pub mod channels_client {
             );
             self.inner.unary(request.into_request(), path, codec).await
         }
+        pub async fn register_voice_server(
+            &mut self,
+            request: impl tonic::IntoRequest<super::RegisterVoiceServerRequest>,
+        ) -> Result<tonic::Response<super::RegisterVoiceServerResponse>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/voice_channels.v1.Channels/RegisterVoiceServer",
+            );
+            self.inner.unary(request.into_request(), path, codec).await
+        }
+        pub async fn cleanup_stale_voice_servers(
+            &mut self,
+            request: impl tonic::IntoRequest<super::CleanupStaleVoiceServersRequest>,
+        ) -> Result<
+            tonic::Response<super::CleanupStaleVoiceServersResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/voice_channels.v1.Channels/CleanupStaleVoiceServers",
+            );
+            self.inner.unary(request.into_request(), path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -353,6 +414,17 @@ pub mod channels_server {
             &self,
             request: tonic::Request<super::UnassignChannelRequest>,
         ) -> Result<tonic::Response<super::UnassignChannelResponse>, tonic::Status>;
+        async fn register_voice_server(
+            &self,
+            request: tonic::Request<super::RegisterVoiceServerRequest>,
+        ) -> Result<tonic::Response<super::RegisterVoiceServerResponse>, tonic::Status>;
+        async fn cleanup_stale_voice_servers(
+            &self,
+            request: tonic::Request<super::CleanupStaleVoiceServersRequest>,
+        ) -> Result<
+            tonic::Response<super::CleanupStaleVoiceServersResponse>,
+            tonic::Status,
+        >;
     }
     #[derive(Debug)]
     pub struct ChannelsServer<T: Channels> {
@@ -676,6 +748,88 @@ pub mod channels_server {
                     let fut = async move {
                         let inner = inner.0;
                         let method = UnassignChannelSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/voice_channels.v1.Channels/RegisterVoiceServer" => {
+                    #[allow(non_camel_case_types)]
+                    struct RegisterVoiceServerSvc<T: Channels>(pub Arc<T>);
+                    impl<
+                        T: Channels,
+                    > tonic::server::UnaryService<super::RegisterVoiceServerRequest>
+                    for RegisterVoiceServerSvc<T> {
+                        type Response = super::RegisterVoiceServerResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::RegisterVoiceServerRequest>,
+                        ) -> Self::Future {
+                            let inner = self.0.clone();
+                            let fut = async move {
+                                (*inner).register_voice_server(request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = RegisterVoiceServerSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/voice_channels.v1.Channels/CleanupStaleVoiceServers" => {
+                    #[allow(non_camel_case_types)]
+                    struct CleanupStaleVoiceServersSvc<T: Channels>(pub Arc<T>);
+                    impl<
+                        T: Channels,
+                    > tonic::server::UnaryService<super::CleanupStaleVoiceServersRequest>
+                    for CleanupStaleVoiceServersSvc<T> {
+                        type Response = super::CleanupStaleVoiceServersResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::CleanupStaleVoiceServersRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = self.0.clone();
+                            let fut = async move {
+                                (*inner).cleanup_stale_voice_servers(request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = CleanupStaleVoiceServersSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

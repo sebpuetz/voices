@@ -182,6 +182,29 @@ pub struct GetChannelResponse {
     name: String,
 }
 
+pub async fn cleanup_stale_voice_servers<S, R>(
+    State(state): State<AppState<S, R>>,
+) -> Result<Json<CleanupStaleVoiceServersResponse>, ApiError>
+where
+    S: ChannelState,
+    R: ChannelRegistry,
+{
+    let registry = state.channels.registry().registry_handle();
+    let message = voices_channels::grpc::proto::CleanupStaleVoiceServersRequest {};
+    let response = registry
+        .cleanup_stale_voice_servers(tonic::Request::new(message))
+        .await?
+        .into_inner();
+    Ok(Json(CleanupStaleVoiceServersResponse {
+        deleted: response.deleted,
+    }))
+}
+
+#[derive(Serialize)]
+pub struct CleanupStaleVoiceServersResponse {
+    deleted: Vec<String>,
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum ApiError {
     #[error(transparent)]

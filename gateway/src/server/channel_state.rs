@@ -19,7 +19,7 @@ pub trait ChannelState: Clone + Send + Sync + 'static {
 }
 
 /// Channel State implementation for Standalone Setup
-/// 
+///
 /// Broadcasts channel events to all subscribed sessions.
 #[derive(Clone)]
 pub struct LocalChannelEvents {

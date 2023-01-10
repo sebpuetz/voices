@@ -221,13 +221,16 @@ impl VoiceConnection {
         };
         let handle = tokio::spawn(slf.run().instrument(tracing::Span::current()));
         let task = VoiceTask::new(handle, client_id);
-        let tx = VoiceControl { source_id, user_name, tx };
+        let tx = VoiceControl {
+            source_id,
+            user_name,
+            tx,
+        };
         Ok((tx, task))
     }
 
     #[tracing::instrument(name="voice_run", skip(self), fields(client_id=%self.client_id, source_id=%self.source_id))]
     pub async fn run(mut self) {
-        // FIXME: timeout
         let mut init_timeout = Box::pin(tokio::time::sleep(Duration::from_secs(15)));
         loop {
             tokio::select! {

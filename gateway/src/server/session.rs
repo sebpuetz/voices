@@ -14,8 +14,8 @@ use voices_ws_proto::{ClientEvent, Init, Join, Present};
 use crate::server::channels::{Channel, ChannelEvent, ChannelEventKind, Channels, ClientInfo};
 use crate::server::ws::ControlStream;
 
-use super::channel_state::ChannelState;
 use super::channel_registry::ChannelRegistry;
+use super::channel_state::ChannelState;
 use super::channels::ChatRoomJoined;
 use super::ws::ControlStreamError;
 
@@ -288,7 +288,7 @@ fn status_check<V: VoiceServer>(
     client_id: Uuid,
     channel_id: Uuid,
 ) -> tokio::task::JoinHandle<()> {
-    // FIXME: stop on drop
+    // FIXME: check whether this is necessary
     tokio::spawn(
         async move {
             let mut inter = tokio::time::interval(Duration::from_secs(5));
@@ -322,7 +322,7 @@ fn status_check<V: VoiceServer>(
                             break;
                         } else {
                             tracing::warn!("status request failed");
-                            continue;
+                            break;
                         }
                     }
                 }
@@ -373,5 +373,6 @@ where
         });
         let handle = self.voice_server.clone();
         tokio::spawn(async move { handle.leave(req).await });
+        self.status_handle.abort();
     }
 }

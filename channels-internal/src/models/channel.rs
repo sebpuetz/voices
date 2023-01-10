@@ -122,19 +122,14 @@ impl Channel {
 
     pub async fn unassign(cid: Uuid, pool: &Pool) -> Result<(), DbError> {
         let conn = pool.get().await?;
-        let res = conn
-            .interact(move |conn| {
-                use crate::schema::channels::dsl::*;
+        conn.interact(move |conn| {
+            use crate::schema::channels::dsl::*;
 
-                diesel::update(channels.filter(id.eq(cid)))
-                    .set(assigned_to.eq(None::<Uuid>))
-                    .returning(assigned_to.nullable())
-                    .execute(conn)
-            })
-            .await??;
-        if res == 0 {
-            return Err(DbError::NotFound);
-        }
+            diesel::update(channels.filter(id.eq(cid)))
+                .set(assigned_to.eq(None::<Uuid>))
+                .execute(conn)
+        })
+        .await??;
         Ok(())
     }
 }

@@ -5,8 +5,8 @@ use tonic::{async_trait, Status};
 
 use crate::connection::{ConnectionState, StatusResponse};
 use crate::{
-    ConnectionData, EstablishSession, EstablishSessionError, OpenConnection, OpenConnectionError,
-    PeerNotFound, SessionData, VoiceServerImpl,
+    ChannelNotFound, ConnectionData, EstablishSession, EstablishSessionError, OpenConnection,
+    OpenConnectionError, PeerNotFound, SessionData, VoiceServerImpl,
 };
 
 pub mod client;
@@ -68,10 +68,8 @@ impl proto::voice_server_server::VoiceServer for VoiceServerImpl {
         let req = request.into_inner();
         let client_id = parse(&req.user_id, "user_id")?;
         let channel_id = parse(&req.channel_id, "channel_id")?;
-        let room = self.get_or_create_channel(channel_id).await;
-        room.leave(client_id)
-            .await
-            .ok_or_else(|| Status::not_found("client is not connected"))?;
+        let room = self.get_channel(channel_id).await.ok_or(ChannelNotFound)?;
+        room.leave(client_id).await.ok_or(PeerNotFound)?;
         Ok(tonic::Response::new(proto::LeaveResponse {}))
     }
 
@@ -83,11 +81,10 @@ impl proto::voice_server_server::VoiceServer for VoiceServerImpl {
         let req = request.into_inner();
         let client_id = parse(&req.user_id, "user_id")?;
         let channel_id = parse(&req.channel_id, "channel_id")?;
-        let room = self.get_or_create_channel(channel_id).await;
-        let ctl = room.peer(client_id).await?;
-        let status = match ctl.status().await {
-            Err(_) => {
-                tracing::warn!("voice status bad");
+        let room = self.get_channel(channel_id).await.ok_or(ChannelNotFound)?;
+        let status = match room.status(client_id).await {
+            Err(e) => {
+                tracing::warn!("voice status bad: {}", e);
                 proto::user_status_response::Status::Error(())
             }
             Ok(StatusResponse {
@@ -133,9 +130,7 @@ impl From<OpenConnectionError> for tonic::Status {
         match value {
             OpenConnectionError::NoOpenPorts => tonic::Status::unavailable("server full"),
             OpenConnectionError::Other(_) => tonic::Status::internal("internal error"),
-            OpenConnectionError::ChannelNotFound => {
-                tonic::Status::not_found("channel not hosted here")
-            }
+            OpenConnectionError::ChannelNotFound(ch) => ch.into(),
         }
     }
 }
@@ -184,6 +179,12 @@ impl From<PeerNotFound> for tonic::Status {
         match value {
             PeerNotFound => tonic::Status::not_found("client not present"),
         }
+    }
+}
+
+impl From<ChannelNotFound> for tonic::Status {
+    fn from(_: ChannelNotFound) -> Self {
+        tonic::Status::not_found("channel not hosted here")
     }
 }
 

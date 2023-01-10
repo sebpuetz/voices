@@ -123,6 +123,10 @@ where
         .route("/servers", axum::routing::get(servers))
         .route("/servers/:id", axum::routing::get(rest_api::get_server))
         .route("/servers", axum::routing::post(rest_api::new_server))
+        .route(
+            "/voice_servers/cleanup",
+            axum::routing::post(rest_api::cleanup_stale_voice_servers),
+        )
         .with_state(AppState { channels });
     let srv = axum::Server::from_tcp(ctl_listener.into_std()?)?.serve(router.into_make_service());
     srv.await?;

@@ -8,7 +8,7 @@ use tonic::{async_trait, Status};
 use crate::db::{DbError, Paginate};
 use crate::models::channel::{Channel, NewChannel};
 use crate::models::server::{NewServer, Server};
-use crate::models::voice_server::VoiceServer;
+use crate::models::voice_server::{NewVoiceServer, VoiceServer};
 
 use super::proto;
 
@@ -18,7 +18,7 @@ pub struct ChannelsImpl {
 }
 
 impl ChannelsImpl {
-    pub async fn new_from_str(conn: String) -> anyhow::Result<Self> {
+    pub async fn new_from_pg_str(conn: String) -> anyhow::Result<Self> {
         let manager = Manager::new(conn, Runtime::Tokio1);
         let db = Pool::builder(manager).build()?;
         Ok(Self { db })
@@ -35,6 +35,30 @@ impl ChannelsImpl {
 
 #[async_trait]
 impl Channels for ChannelsImpl {
+    async fn cleanup_stale_voice_servers(
+        &self,
+        _: tonic::Request<proto::CleanupStaleVoiceServersRequest>,
+    ) -> Result<tonic::Response<proto::CleanupStaleVoiceServersResponse>, tonic::Status> {
+        let deleted = VoiceServer::cleanup_stale(&self.db).await?;
+        Ok(tonic::Response::new(
+            proto::CleanupStaleVoiceServersResponse {
+                deleted: deleted.iter().map(ToString::to_string).collect(),
+            },
+        ))
+    }
+
+    async fn register_voice_server(
+        &self,
+        request: tonic::Request<proto::RegisterVoiceServerRequest>,
+    ) -> Result<tonic::Response<proto::RegisterVoiceServerResponse>, tonic::Status> {
+        let req = request.into_inner();
+        let id = parse(&req.id, "voice_server_id")?;
+        NewVoiceServer::new(id, req.addr)
+            .create_or_update(&self.db)
+            .await?;
+        Ok(tonic::Response::new(proto::RegisterVoiceServerResponse {}))
+    }
+
     async fn get_servers(
         &self,
         request: tonic::Request<proto::GetServersRequest>,
@@ -115,7 +139,9 @@ impl Channels for ChannelsImpl {
             .await?
             .ok_or_else(|| tonic::Status::not_found("channel not found"))?;
         let v = match c.assigned_to {
-            Some(id) => Some(VoiceServer::get(id, &self.db).await.unwrap().unwrap().host),
+            Some(id) => VoiceServer::get_active(id, &self.db)
+                .await?
+                .map(|v| v.host_url),
             None => None,
         };
         Ok(tonic::Response::new(proto::GetChannelResponse {
@@ -147,7 +173,7 @@ impl Channels for ChannelsImpl {
             .await?
             .ok_or_else(|| tonic::Status::not_found("channel not found"))?;
         Ok(tonic::Response::new(proto::AssignChannelResponse {
-            voice_server_host: srv.host,
+            voice_server_host: srv.host_url,
         }))
     }
 
@@ -170,8 +196,6 @@ impl From<DbError> for tonic::Status {
                 tracing::warn!("error: {}", value);
                 tonic::Status::internal(value.to_string())
             }
-            // FIXME: terrible message
-            DbError::NotFound => tonic::Status::not_found("not found"),
         }
     }
 }
