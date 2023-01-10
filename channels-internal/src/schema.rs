@@ -36,7 +36,8 @@ diesel::table! {
 diesel::table! {
     voice_servers (id) {
         id -> Uuid,
-        host -> Text,
+        host_url -> Text,
+        last_seen -> Timestamptz,
     }
 }
 

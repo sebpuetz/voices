@@ -49,6 +49,7 @@ where
 {
     registry: R,
     // channels with sessions on this instance
+    #[allow(clippy::type_complexity)]
     inner: Arc<RwLock<HashMap<Uuid, Channel<S, R::Voice>>>>,
     channel_init: Arc<dyn ChannelInit<S, R>>,
 }
@@ -199,7 +200,6 @@ where
         if guard.is_empty() {
             tracing::info!(channel_id=?self.id, "last client left, closing");
             self.channels.close(self.id).await.unwrap();
-            return;
         }
     }
 

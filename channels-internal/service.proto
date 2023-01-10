@@ -11,7 +11,23 @@ service Channels {
   rpc AssignChannel(AssignChannelRequest) returns (AssignChannelResponse) {}
   rpc UnassignChannel(UnassignChannelRequest)
       returns (UnassignChannelResponse) {}
+  rpc RegisterVoiceServer(RegisterVoiceServerRequest)
+      returns (RegisterVoiceServerResponse) {}
+
+  rpc CleanupStaleVoiceServers(CleanupStaleVoiceServersRequest)
+      returns (CleanupStaleVoiceServersResponse) {}
 }
+
+message CleanupStaleVoiceServersRequest {}
+
+message CleanupStaleVoiceServersResponse { repeated string deleted = 1; }
+
+message RegisterVoiceServerRequest {
+  string id = 1;
+  string addr = 2;
+}
+
+message RegisterVoiceServerResponse {}
 
 message GetServersRequest {
   optional int64 per_page = 1;

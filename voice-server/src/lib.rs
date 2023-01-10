@@ -67,7 +67,6 @@ impl VoiceServerImpl {
     }
 
     /// Get the room identified by [`id`].
-    // FIXME: Currently creates the room if it doesn't exist, replace with channel registry.
     pub async fn get_or_create_channel(&self, id: Uuid) -> Channel {
         self.rooms
             .write()
@@ -98,7 +97,7 @@ impl VoiceServerImpl {
         let room = self
             .get_channel(req.channel_id)
             .await
-            .ok_or_else(|| OpenConnectionError::ChannelNotFound)?;
+            .ok_or(ChannelNotFound)?;
 
         let port_ref = self
             .allocate_port()
@@ -152,13 +151,17 @@ pub struct ConnectionData {
 
 #[derive(thiserror::Error, Debug)]
 pub enum OpenConnectionError {
-    #[error("channel not hosted here")]
-    ChannelNotFound,
+    #[error(transparent)]
+    ChannelNotFound(#[from] ChannelNotFound),
     #[error("no open ports left")]
     NoOpenPorts,
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
+
+#[derive(thiserror::Error, Debug)]
+#[error("channel not hosted here")]
+pub struct ChannelNotFound;
 
 pub struct EstablishSession {
     pub channel_id: Uuid,
@@ -187,6 +190,14 @@ pub struct PeerNotFound;
 pub enum JoinError {
     #[error("connection already open")]
     ConnectionAlreadyOpen(SocketAddr),
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum StatusError {
+    #[error(transparent)]
+    PeerNotFound(#[from] PeerNotFound),
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -355,9 +366,9 @@ impl Channel {
             .ok_or(PeerNotFound)
     }
 
-    pub async fn status(&self, client_id: Uuid) -> StatusResponse {
-        let ctl = self.peer(client_id).await.expect("FIXME");
-        ctl.status().await.expect("FIXME")
+    pub async fn status(&self, client_id: Uuid) -> Result<StatusResponse, StatusError> {
+        let ctl = self.peer(client_id).await?;
+        ctl.status().await.map_err(Into::into)
     }
 
     pub async fn leave(&self, client_id: Uuid) -> Option<()> {

@@ -1,17 +1,4 @@
-use deadpool::Runtime;
-use deadpool_diesel::postgres::{Manager, Pool};
-pub struct Db {
-    pool: Pool,
-}
-
-impl Db {
-    pub fn new(
-        db_str: String,
-    ) -> Result<Db, deadpool::managed::BuildError<deadpool_diesel::Error>> {
-        let manager = Manager::new(db_str, Runtime::Tokio1);
-        Pool::builder(manager).build().map(|pool| Db { pool })
-    }
-}
+use deadpool_diesel::postgres::Pool;
 
 #[derive(thiserror::Error, Debug)]
 pub enum DbError {
@@ -21,8 +8,6 @@ pub enum DbError {
     InteractError(&'static str),
     #[error(transparent)]
     DieselError(#[from] diesel::result::Error),
-    #[error("not found")]
-    NotFound,
 }
 
 impl From<deadpool_diesel::postgres::InteractError> for DbError {
@@ -37,7 +22,6 @@ impl From<deadpool_diesel::postgres::InteractError> for DbError {
         }
     }
 }
-
 
 use diesel::pg::Pg;
 use diesel::prelude::*;

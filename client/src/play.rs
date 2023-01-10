@@ -144,7 +144,10 @@ pub async fn play(
     let mut playing: Option<tokio::task::JoinHandle<()>> = None;
     while let Some(stream) = play_rx.recv().await {
         let quiet = match stream {
-            PlayerEvent::Joined { rx: joined, announce_quiet: quiet } => {
+            PlayerEvent::Joined {
+                rx: joined,
+                announce_quiet: quiet,
+            } => {
                 tracing::debug!("Received play stream");
                 // FIXME: there can be substantial lag since the `samples` queue will happily accept more data without ever fast forwarding
                 let (tx, samples) = rodio::queue::queue(true);
@@ -284,7 +287,7 @@ impl State {
         let n_buffered = self.queue.len();
 
         tracing::trace!(self.next_expected, voice.sequence);
-        let play = if n_buffered >= 3 {
+        if n_buffered >= 3 {
             let v = self.pop();
             self.push(voice);
             v
@@ -294,9 +297,7 @@ impl State {
         } else {
             self.push(voice);
             None
-        };
-
-        play
+        }
     }
 
     fn push(&mut self, voice: Voice) {

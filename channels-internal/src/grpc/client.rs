@@ -6,6 +6,22 @@ use super::proto;
 impl proto::channels_server::Channels
     for proto::channels_client::ChannelsClient<tonic::transport::Channel>
 {
+    async fn cleanup_stale_voice_servers(
+        &self,
+        request: tonic::Request<proto::CleanupStaleVoiceServersRequest>,
+    ) -> Result<tonic::Response<proto::CleanupStaleVoiceServersResponse>, tonic::Status> {
+        let mut slf = self.clone();
+        proto::channels_client::ChannelsClient::cleanup_stale_voice_servers(&mut slf, request).await
+    }
+
+    async fn register_voice_server(
+        &self,
+        request: tonic::Request<proto::RegisterVoiceServerRequest>,
+    ) -> Result<tonic::Response<proto::RegisterVoiceServerResponse>, tonic::Status> {
+        let mut slf = self.clone();
+        proto::channels_client::ChannelsClient::register_voice_server(&mut slf, request).await
+    }
+
     async fn get_servers(
         &self,
         request: tonic::Request<proto::GetServersRequest>,

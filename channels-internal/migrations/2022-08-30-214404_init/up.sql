@@ -10,14 +10,15 @@ CREATE TABLE "servers" (
 
 CREATE TABLE "voice_servers" (
   "id" UUID PRIMARY KEY DEFAULT (uuid_generate_v4()),
-  "host" TEXT NOT NULL UNIQUE,
-  "count" int4 DEFAULT (0)
+  "host_url" TEXT NOT NULL,
+  "last_seen" timestamptz NOT NULL DEFAULT NOW()
 );
+CREATE INDEX idx_voice_servers_last_seen ON voice_servers ("last_seen");
 
 CREATE TABLE "channels" (
   "id" UUID PRIMARY KEY DEFAULT (uuid_generate_v4()),
-  "server_id" UUID NOT NULL REFERENCES "servers"("id"),
-  "assigned_to" UUID REFERENCES "voice_servers"("id"),
+  "server_id" UUID NOT NULL REFERENCES "servers"("id") ON DELETE CASCADE,
+  "assigned_to" UUID REFERENCES "voice_servers"("id") ON DELETE SET NULL,
   "name" TEXT NOT NULL,
   "updated_at" timestamptz NOT NULL DEFAULT (NOW())
 );
