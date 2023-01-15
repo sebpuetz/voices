@@ -22,9 +22,10 @@ async fn main() -> anyhow::Result<()> {
     LogTracer::init()?;
     let config = Config::parse();
     tracing::info!("starting server with {:#?}", config);
-    let ch =
-        tonic::transport::Endpoint::from(config.channels_addr.parse::<tonic::transport::Uri>()?)
-            .connect_lazy();
+    let endpoint = config.channels_addr.parse::<tonic::transport::Uri>()?;
+    tracing::info!(endpoint=%endpoint, "setting up remote channel registry client");
+
+    let ch = tonic::transport::Endpoint::from(endpoint).connect_lazy();
     let client = voices_channels::grpc::proto::channels_client::ChannelsClient::new(ch);
     // TODO: register voice server with channels registry, clear previously hosted channels
     tokio::spawn(heartbeat(
@@ -70,15 +71,15 @@ async fn heartbeat(
 /// Standalone server config
 #[derive(clap::Parser, Debug)]
 pub struct Config {
-    #[clap(long, default_value = "http://localhost")]
+    #[clap(long, default_value = "http://localhost", env)]
     http_host_url: String,
-    #[clap(long, default_value_t = 33331)]
+    #[clap(long, default_value_t = 33331, env)]
     http_port: u16,
     #[clap(flatten)]
     voice_server: VoiceServerConfig,
-    #[clap(long, default_value = "http://localhost:33330")]
+    #[clap(long, default_value = "http://localhost:33330", env)]
     channels_addr: String,
-    #[clap(long)]
+    #[clap(long, env)]
     server_id: Option<Uuid>,
 }
 

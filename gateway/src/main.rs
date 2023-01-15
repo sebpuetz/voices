@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::extract::ws::WebSocket;
+use axum::http::{HeaderValue, Method};
 use clap::{CommandFactory, FromArgMatches, Parser};
 use rest_api::{new_channel, servers};
 use server::channel_registry::ChannelRegistry;
@@ -16,8 +17,6 @@ use tracing::subscriber::set_global_default;
 // use tracing::Instrument;
 use tracing_log::LogTracer;
 use tracing_subscriber::prelude::*;
-use voice_server::config::VoiceServerConfig;
-use voices_channels::ChannelsConfig;
 
 use crate::server::channel_registry::{DistributedChannelRegistry, LocalChannelRegistry};
 use crate::server::channels::Channels;
@@ -26,8 +25,8 @@ use crate::server::channels::Channels;
 #[clap(name = "voice-server")]
 #[clap(author, version, about, long_about = None)]
 struct Config {
-    #[clap(long, default_value_t = 33332)]
-    ws_listen_port: u16,
+    #[clap(long, default_value_t = 33332, env)]
+    http_listen_port: u16,
     #[clap(subcommand)]
     setup: SetupSubcommand,
 }
@@ -35,16 +34,17 @@ struct Config {
 #[derive(Debug, Parser)]
 enum SetupSubcommand {
     Distributed {
-        #[clap(long, default_value = "http://localhost:33330")]
+        #[clap(long, default_value = "http://localhost:33330", env)]
         channels_addr: String,
-        #[clap(long, default_value = "redis://127.0.0.1:6379/")]
+        #[clap(long, default_value = "redis://127.0.0.1:6379/", env)]
         redis_conn: String,
     },
+    #[cfg(feature = "standalone")]
     Standalone {
         #[clap(flatten)]
-        voice_config: VoiceServerConfig,
+        voice_config: voice_server::config::VoiceServerConfig,
         #[clap(flatten)]
-        channels_config: ChannelsConfig,
+        channels_config: voices_channels::ChannelsConfig,
     },
 }
 
@@ -72,7 +72,7 @@ async fn main_() -> anyhow::Result<()> {
         .dont_collapse_args_in_usage(true)
         .get_matches();
     let config = Config::from_arg_matches(&matches)?;
-    let tcp_addr = SocketAddr::from(([0, 0, 0, 0], config.ws_listen_port));
+    let tcp_addr = SocketAddr::from(([0, 0, 0, 0], config.http_listen_port));
     let ctl_listener = tokio::net::TcpListener::bind(tcp_addr).await?;
     tracing::info!("Control listening on {}", ctl_listener.local_addr()?);
     match config.setup {
@@ -102,7 +102,7 @@ async fn main_() -> anyhow::Result<()> {
                     channels,
                 ))
             };
-            let channels_impl = channels_config.server()?;
+            let channels_impl = channels_config.server().await?;
             let voice = voice_config.server(Arc::new(channels_impl.clone())).await?;
             let local_registry = LocalChannelRegistry::new(channels_impl, voice);
             let channels = Channels::new(room_init, local_registry);
@@ -116,8 +116,9 @@ where
     R: ChannelRegistry,
     S: ChannelState,
 {
+    use tower_http::cors::CorsLayer;
     let router = axum::Router::new()
-        .route("/", axum::routing::get(websocket_handler))
+        .route("/ws", axum::routing::get(websocket_handler))
         .route("/channels", axum::routing::post(new_channel))
         .route("/channels/:id", axum::routing::get(rest_api::get_channel))
         .route("/servers", axum::routing::get(servers))
@@ -126,6 +127,11 @@ where
         .route(
             "/voice_servers/cleanup",
             axum::routing::post(rest_api::cleanup_stale_voice_servers),
+        )
+        .layer(
+            CorsLayer::new()
+                .allow_origin("*".parse::<HeaderValue>().unwrap())
+                .allow_methods([Method::GET, Method::POST]),
         )
         .with_state(AppState { channels });
     let srv = axum::Server::from_tcp(ctl_listener.into_std()?)?.serve(router.into_make_service());

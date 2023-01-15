@@ -36,3 +36,9 @@ voices-ws-proto = { path = "../ws-proto", features = ["server"] }
 voices-channels = { path = "../channels-internal" }
 tonic = { version = "0.8.3", features = ["tokio-rustls", "tls"] }
 axum = { version = "0.6.1", features = ["ws"] }
+tower-http = { version = "0.3.5", features = ["cors"] }
+
+[features]
+default = ["standalone", "distributed"]
+distributed = []
+standalone = []

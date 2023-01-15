@@ -1,0 +1,5 @@
+.dockerignore
+.gitignore
+target/
+docker-build.sh
+channels-internal/dev-db

@@ -1,0 +1,82 @@
+version: '3'
+services:
+  db:
+    image: "postgres"
+    restart: always
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+    volumes:
+      - ./channels-internal/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - channels-dev-db:/var/lib/postgresql/data
+  redis:
+    image: "redis"
+    restart: always
+
+  ingress:
+    image: nginx
+    restart: always
+    ports:
+      - 8080:8000
+    volumes:
+      - ./dev-ingress/nginx.conf:/etc/nginx/nginx.conf
+
+  channels:
+    depends_on:
+      - db
+    restart: always
+    environment:
+      - RUST_LOG=DEBUG,h2=WARN,tower=WARN,hyper=WARN
+      - DATABASE_URL=postgres://postgres:password@db:5432/voices_channels
+    image: voices/channels
+    deploy:
+      replicas: 3
+    command: "./voices-channels --migrate"
+
+  gateway:
+    image: voices/gateway
+    environment:
+      - RUST_LOG=DEBUG,h2=WARN,tower=WARN,hyper=WARN
+      - CHANNELS_ADDR=http://channels:33330
+      - REDIS_CONN=redis://redis:6379/
+    command: "./voices-gateway distributed"
+    deploy:
+      replicas: 3
+
+  voice-server-1:
+    image: voices/server
+    environment:
+      - RUST_LOG=DEBUG,h2=WARN,tower=WARN,hyper=WARN
+      - CHANNELS_ADDR=http://channels:33330
+      - HTTP_HOST_URL=http://voice-server-1
+      - FIRST_UDP_PORT=12222
+      - UDP_PORTS=100
+    command: "./voices-server"
+    ports:
+      - "12222-12322:12222-12322/udp"
+  voice-server-2:
+    image: voices/server
+    environment:
+      - RUST_LOG=DEBUG,h2=WARN,tower=WARN,hyper=WARN
+      - CHANNELS_ADDR=http://channels:33330
+      - HTTP_HOST_URL=http://voice-server-2
+      - FIRST_UDP_PORT=22222
+      - UDP_PORTS=100
+    command: "./voices-server"
+    ports:
+      - "22222-22322:22222-22322/udp"
+  voice-server-3:
+    image: voices/server
+    environment:
+      - RUST_LOG=DEBUG,h2=WARN,tower=WARN,hyper=WARN
+      - CHANNELS_ADDR=http://channels:33330
+      - HTTP_HOST_URL=http://voice-server-3
+      - FIRST_UDP_PORT=32222
+      - UDP_PORTS=100
+    command: "./voices-server"
+    ports:
+      - "32222-32322:32222-32322/udp"
+
+volumes:
+  channels-dev-db:
+    driver: local
