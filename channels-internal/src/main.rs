@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
     )?;
     LogTracer::init()?;
     let cfg = Config::parse();
-    let service = cfg.channels.server()?.grpc();
+    let service = cfg.channels.server().await?.grpc();
 
     let classifier = GrpcErrorsAsFailures::new()
         .with_success(GrpcCode::InvalidArgument)
@@ -46,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
     tonic::transport::Server::builder()
         .layer(layers)
         .add_service(service)
-        .serve_with_shutdown(SocketAddr::from(([127, 0, 0, 1], cfg.listen_port)), async {
+        .serve_with_shutdown(SocketAddr::from(([0, 0, 0, 0], cfg.listen_port)), async {
             tracing::debug!("waiting for shutdown signal");
             let _ = ctrl_c().await;
             tracing::info!("received shutdown signal");

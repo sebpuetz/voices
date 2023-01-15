@@ -48,3 +48,20 @@ RUST_LOG=debug,tower=warn,h2=warn voice-server
 # expects migrated voices_channels db postgres://postgres:password@localhost:5432/voices_channels
 RUST_LOG=debug,tower=warn,h2=warn voices-channels
 ```
+
+# Dev Deployment
+
+Deploys 3 instances of `channels`, `gateway` and `voice-server` via docker-compose. The gateways
+are behind an nginx reverse proxy listening on port `8000`, the `voice-server` instances start
+assigning up to 100 UDP ports from `12222`, `22222` and `32222` respectively. The `voice-server`s
+are configured to return their local listen address, i.e. they are not reachable from the internet
+without modifying the `UDP_HOST` variable in their deployments to something reachable from the
+internet.
+
+```bash
+./docker-build.sh
+# bring up 3 channels, gateway and voice-server instances along nginx, redis and postgres
+docker-compose up -d
+# to follow the logs
+# docker-compose logs -f 
+```

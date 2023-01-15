@@ -70,7 +70,9 @@ pub struct DistributedChannelRegistry {
 
 impl DistributedChannelRegistry {
     pub fn new(endpoint: tonic::transport::Uri) -> Self {
-        let ch = tonic::transport::Endpoint::from(endpoint).connect_lazy();
+        tracing::info!(endpoint=%endpoint, "setting up remote channel registry client");
+        let endpoint = tonic::transport::Endpoint::from(endpoint);
+        let ch = endpoint.connect_lazy();
         Self {
             channels: voices_channels::grpc::proto::channels_client::ChannelsClient::new(ch),
         }

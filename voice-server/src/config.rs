@@ -8,11 +8,11 @@ use crate::{Ports, VoiceServerImpl};
 
 #[derive(clap::Parser, Debug)]
 pub struct VoiceServerConfig {
-    #[clap(long, default_value_t = 33333)]
+    #[clap(long, default_value_t = 33333, env)]
     first_udp_port: u16,
-    #[clap(long, default_value_t = 2)]
+    #[clap(long, default_value_t = 2, env)]
     udp_ports: u16,
-    #[clap(long, default_value = "localhost")]
+    #[clap(long, default_value = "localhost", env)]
     udp_host: String,
 }
 

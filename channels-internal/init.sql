@@ -1,0 +1,1 @@
+CREATE DATABASE "voices_channels";
