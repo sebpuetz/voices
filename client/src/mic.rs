@@ -11,6 +11,7 @@ use cpal::platform::{WasapiDevice as Device, WasapiHost as Host, WasapiStream as
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, InputCallbackInfo, SampleFormat, SampleRate, StreamConfig};
+use nnnoiseless::DenoiseState;
 use rubato::{FftFixedInOut, Resampler as _};
 
 use crate::udp::RecordTx;
@@ -34,12 +35,12 @@ pub fn record(tx: RecordTx) -> anyhow::Result<Stream> {
 
 pub struct Input {
     input_buf: Vec<f32>,
-
     opus: audiopus::coder::Encoder,
     resampler: Option<Resampler>,
     channels: u32,
     sample_rate: u32,
-
+    denoiser_l: Box<DenoiseState<'static>>,
+    denoiser_r: Box<DenoiseState<'static>>,
     tx: RecordTx,
 }
 
@@ -55,6 +56,39 @@ impl Resampler {
             .process_into_buffer(&self.buf_in, &mut self.buf_out, None)?;
         Ok(())
     }
+}
+
+fn interleave<I: AsRef<[f32]>>(input: &[I], output: &mut [f32]) {
+    assert_eq!(input.len(), 2);
+    let l = input[0].as_ref();
+    let r = input[1].as_ref();
+
+    assert_eq!(l.len() + r.len(), output.len());
+    for i in 0..l.len() {
+        output[i * 2] = l[i];
+        output[i * 2 + 1] = r[i];
+    }
+}
+
+fn deinterleave(input: &[f32], output: &mut [Vec<f32>]) {
+    assert_eq!(input.len(), output[0].len() + output[1].len());
+    assert_eq!(output.len(), 2);
+    for i in 0..output[0].len() {
+        output[0][i] = input[i * 2];
+        output[1][i] = input[i * 2 + 1];
+    }
+}
+
+fn scale_up(v: &mut [f32]) {
+    v.iter_mut().for_each(|v| {
+        *v = *v * 32767.0;
+    })
+}
+
+fn scale_down(v: &mut [f32]) {
+    v.iter_mut().for_each(|v| {
+        *v = *v / 32767.0;
+    })
 }
 
 impl Input {
@@ -81,12 +115,16 @@ impl Input {
             audiopus::Application::Voip,
         )?;
         opus.set_bitrate(audiopus::Bitrate::BitsPerSecond(128_000))?;
+        let denoiser_l = DenoiseState::new();
+        let denoiser_r = DenoiseState::new();
         Ok(Self {
             input_buf: Vec::with_capacity(4096),
             opus,
             channels,
             tx,
             resampler,
+            denoiser_l,
+            denoiser_r,
             sample_rate,
         })
     }
@@ -94,6 +132,10 @@ impl Input {
     pub fn data_callback(mut self) -> impl FnMut(&[f32], &InputCallbackInfo) + Send + 'static {
         let samples_per_period = (2 * self.sample_rate) / 50;
 
+        let mut denoised_l = vec![0.0; 480];
+        let mut denoised_r = vec![0.0; 480];
+        let mut deinterleave_buf: Option<[Vec<f32>; 2]> = None;
+        let mut silent = 0;
         move |data: &[f32], _: &InputCallbackInfo| {
             if self.channels == 2 {
                 self.input_buf.extend_from_slice(data);
@@ -104,29 +146,70 @@ impl Input {
                 });
             };
 
-            let chunks = self.input_buf.chunks_exact(samples_per_period as usize);
-            let rem = chunks.remainder();
+            let mut chunks = self.input_buf.chunks_exact_mut(samples_per_period as usize);
             let mut resampled = Vec::new();
-            for mut chunk in chunks {
+            for mut chunk in chunks.by_ref() {
+                let mut vad_prob_l = 0f32;
+                let mut vad_prob_r = 0f32;
+                let mut n_denoised = 0;
+                scale_up(chunk);
                 if let Some(resampler) = &mut self.resampler {
-                    for (i, c) in chunk.chunks_exact(2).enumerate() {
-                        resampler.buf_in[0][i] = c[0];
-                        resampler.buf_in[1][i] = c[1];
-                    }
+                    deinterleave(chunk, &mut resampler.buf_in);
                     resampler.process().expect("resampler failed");
                     let samples = resampler.buf_out[0].len();
                     resampled.resize(samples * 2, 0f32);
-                    for i in 0..samples {
-                        resampled[i * 2] = resampler.buf_out[0][i];
-                        resampled[i * 2 + 1] = resampler.buf_out[1][i];
+                    for ((denoise_chunk_l, denoise_chunk_r), out) in resampler.buf_out[0]
+                        .chunks_exact(480)
+                        .zip(resampler.buf_out[1].chunks_exact(480))
+                        .zip(resampled.chunks_exact_mut(960))
+                    {
+                        vad_prob_l += self
+                            .denoiser_l
+                            .process_frame(&mut denoised_l, denoise_chunk_l);
+                        vad_prob_r += self
+                            .denoiser_r
+                            .process_frame(&mut denoised_r, denoise_chunk_r);
+                        n_denoised += 1;
+                        interleave(&[&denoised_l, &denoised_r], out);
                     }
-                    chunk = &resampled;
+                    chunk = &mut resampled;
+                } else {
+                    let out =
+                        deinterleave_buf.get_or_insert_with(|| [vec![0.; 480], vec![0.; 480]]);
+                    let mut denoise_chunks = chunk.chunks_exact_mut(960);
+                    for denoise_chunk in denoise_chunks.by_ref() {
+                        deinterleave(denoise_chunk, out);
+                        vad_prob_l += self.denoiser_l.process_frame(&mut denoised_l, &out[0]);
+                        vad_prob_r += self.denoiser_r.process_frame(&mut denoised_r, &out[1]);
+                        n_denoised += 1;
+                        let l = &out[0];
+                        let r = &out[1];
+                        interleave(&[l, r], denoise_chunk);
+                    }
                 }
-                let mut out = vec![0; 500];
-                let written = self.opus.encode_float(chunk, &mut out).unwrap();
-                out.truncate(written);
-                self.tx.send(out).expect("mic receiver died");
+                scale_down(chunk);
+                vad_prob_l /= n_denoised as f32;
+                vad_prob_r /= n_denoised as f32;
+                if (vad_prob_l + vad_prob_r) / 2. < 0.5 {
+                    silent += 1;
+                } else {
+                    silent = 0;
+                }
+
+                if silent < 5 {
+                    let mut out = vec![0; 500];
+                    let written = self.opus.encode_float(chunk, &mut out).unwrap();
+                    out.truncate(written);
+                    self.tx.send(out).expect("mic receiver died");
+                } else if silent == 5 {
+                    tracing::debug!(silent, vad_prob = (vad_prob_l + vad_prob_r) / 2.);
+                    const SILENCE_FRAME: [u8; 3] = [0xF8, 0xFF, 0xFE];
+                    self.tx
+                        .send(SILENCE_FRAME.to_vec())
+                        .expect("mic receiver died");
+                }
             }
+            let rem = chunks.into_remainder();
             let rem_len = rem.len();
             let start = self.input_buf.len() - rem_len;
             let src = start..self.input_buf.len();
