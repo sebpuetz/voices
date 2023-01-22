@@ -65,7 +65,7 @@ impl UdpWithBuf {
         M::decode(&self.buf[..len]).map_err(Into::into)
     }
 
-    pub async fn recv_from<M: prost::Message + Default>(
+    pub async fn recv_proto_from<M: prost::Message + Default>(
         &mut self,
     ) -> Result<(SocketAddr, M), UdpError> {
         let (len, addr) = self.sock.recv_from(&mut self.buf).await?;
@@ -73,6 +73,7 @@ impl UdpWithBuf {
             .map_err(Into::into)
             .map(|m| (addr, m))
     }
+
 }
 
 #[derive(thiserror::Error, Debug)]

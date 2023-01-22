@@ -33,24 +33,29 @@ impl UdpSetup {
     }
 
     #[tracing::instrument(skip_all)]
-    pub async fn discover_ip(&mut self) -> Result<SocketAddr, SetupError> {
+    pub async fn discover_ip(&mut self, source_id: u32) -> Result<SocketAddr, SetupError> {
         tracing::debug!("start ip discovery");
 
         let req = IpDiscoveryRequest {
             uuid: self.user_id.as_bytes().to_vec(),
+            source_id,
         };
-        self.sock.send(&req).await?;
+        self.sock.send(&ClientMessage::ip_disco(req)).await?;
 
-        let IpDiscoveryResponse { ip, port } =
-            timeout(Duration::from_millis(100), self.sock.recv())
-                .await
-                .map_err(|_| SetupError::Timeout)??;
-
-        let ip = IpAddr::from_str(ip.as_str()).map_err(|_| SetupError::BadData)?;
-        let port = port as u16;
-        let external_addr = SocketAddr::from((ip, port));
-        tracing::debug!("external addr: {}", external_addr);
-        Ok(external_addr)
+        let ServerMessage { message } = timeout(Duration::from_millis(100), self.sock.recv())
+            .await
+            .map_err(|_| SetupError::Timeout)??;
+        let msg = message.ok_or(SetupError::BadData)?;
+        if let server_message::Message::IpDisco(IpDiscoveryResponse { ip, port }) = msg {
+            let ip = IpAddr::from_str(ip.as_str()).map_err(|_| SetupError::BadData)?;
+            let port = port as u16;
+            let external_addr = SocketAddr::from((ip, port));
+            tracing::debug!("external addr: {}", external_addr);
+            Ok(external_addr)
+        } else {
+            tracing::warn!("expected ip disco response, got something different");
+            return Err(SetupError::BadData);
+        }
     }
 
     #[tracing::instrument(skip_all, fields(source_id=src_id))]
@@ -89,7 +94,9 @@ impl UdpSetup {
         let stream = mic::record(tx)?;
         tokio::spawn(async move {
             let _stream = stream;
-            if let Err(e) = udp_tx(self.sock, rx, get_received, set_sent, mute, cipher).await {
+            if let Err(e) =
+                udp_tx(self.sock, rx, get_received, set_sent, mute, cipher, src_id).await
+            {
                 tracing::error!("udp tx dead: {}", e)
             }
         });
@@ -166,6 +173,7 @@ pub async fn udp_tx(
     set_sent: Arc<AtomicU64>,
     mute: bool,
     cipher: XSalsa20Poly1305,
+    source_id: u32,
 ) -> anyhow::Result<()> {
     let mut deadline = Instant::now();
     let keepalive_interval = Duration::from_secs(5);
@@ -184,6 +192,7 @@ pub async fn udp_tx(
                             payload: voice,
                             sequence: sequence as _,
                             stream_time,
+                            source_id,
                         };
                         let voice = ClientMessage::voice(payload);
                         sock.send(&voice).await?;
@@ -200,11 +209,7 @@ pub async fn udp_tx(
                     .as_millis();
                 let recv = get_received.load(std::sync::atomic::Ordering::SeqCst);
                 let sent = set_sent.swap(sequence.wrapping_sub(start_seq_num), std::sync::atomic::Ordering::SeqCst);
-                let ping = ClientMessage::ping(Ping {
-                    seq: seq as _,
-                    recv,
-                    sent,
-                });
+                let ping = ClientMessage::ping(Ping {seq:seq as _,recv,sent, source_id });
                 sock.send(&ping).await?;
                 deadline += keepalive_interval;
             }
@@ -332,6 +337,7 @@ pub async fn udp_rx(
                     (now - Duration::from_millis(pong.seq)).as_millis(),
                 );
             }
+            ServerMessage { message: Some(_) } => todo!(),
             ServerMessage { message: None } => {
                 anyhow::bail!("fucked up");
             }

@@ -8,8 +8,8 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use uuid::Uuid;
 use voices_ws_proto::{
-    Announce, ClientEvent, Disconnected, Init, JoinError, Left, MessageExt, Present, Ready,
-    ServerEvent,
+    ClientEvent, Disconnected, Init, JoinError, Left, MessageExt, Present, Ready, ServerAnnounce,
+    ServerEvent, ClientAnnounce,
 };
 
 use crate::util::TimeoutExt;
@@ -49,10 +49,15 @@ impl ControlStream {
             .map_err(|_| ControlStreamError::DeadReceiver)
     }
 
-    pub async fn announce_udp(&self, socket: SocketAddr) -> Result<(), ControlStreamError> {
-        self.send(ServerEvent::UdpAnnounce(Announce {
+    pub async fn announce_udp(
+        &self,
+        socket: SocketAddr,
+        source_id: u32,
+    ) -> Result<(), ControlStreamError> {
+        self.send(ServerEvent::UdpAnnounce(ServerAnnounce {
             ip: socket.ip(),
             port: socket.port(),
+            source_id,
         }))
         .await
     }
@@ -93,7 +98,7 @@ impl ControlStream {
         }
     }
 
-    pub async fn await_client_udp(&mut self) -> Result<Announce, ControlStreamError> {
+    pub async fn await_client_udp(&mut self) -> Result<ClientAnnounce, ControlStreamError> {
         match self.next_event().await.ok_or(ControlStreamError::End)? {
             ClientEvent::UdpAnnounce(announce) => Ok(announce),
             evt => Err(ControlStreamError::UnexpectedMessage {

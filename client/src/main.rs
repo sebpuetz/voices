@@ -45,7 +45,7 @@ async fn async_main_() -> anyhow::Result<()> {
 
     let channel_id = config.room_id.unwrap_or_else(Uuid::new_v4);
     stream.join(channel_id).await?;
-    let Announce { ip, port } = stream.await_voice_udp().await?;
+    let ServerAnnounce { ip, port, source_id } = stream.await_voice_udp().await?;
     let remote_udp = SocketAddr::from((ip, port));
     tracing::debug!("connecting UDP to {}", remote_udp);
     let mut udp = udp::UdpSetup::new(remote_udp, user_id).await?;
@@ -55,7 +55,7 @@ async fn async_main_() -> anyhow::Result<()> {
             anyhow::bail!("failed ip disco");
         }
         attempt += 1;
-        match udp.discover_ip().await {
+        match udp.discover_ip(source_id).await {
             Ok(slf_addr) => {
                 stream.announce_udp(slf_addr).await?;
                 break;
