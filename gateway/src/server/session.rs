@@ -11,7 +11,7 @@ use voice_server::grpc::{proto, tonic};
 use voice_server::VoiceServer;
 use voices_ws_proto::{ClientEvent, Init, Join, Present};
 
-use crate::server::channels::{Channel, ChannelEvent, ChannelEventKind, Channels, ClientInfo};
+use crate::server::channels::{ChannelEvent, ChannelEventKind, Channels, ClientInfo};
 use crate::server::ws::ControlStream;
 
 use super::channel_registry::ChannelRegistry;
@@ -138,12 +138,11 @@ where
             ClientEvent::Join(Join { channel_id }) => {
                 tracing::info!("joining {}", channel_id);
                 self.stop_voice().await;
-                let room = self.channels.get_or_init(channel_id).await?;
-                let room_id = room.id();
-                if let Some(voice) = self.initialize_voice_connection(room).await? {
+
+                if let Some(voice) = self.initialize_voice_connection(channel_id).await? {
                     self.voice = Some(voice);
                 } else {
-                    self.ctl.join_error(room_id).await?;
+                    self.ctl.join_error(channel_id).await?;
                 }
             }
             ClientEvent::Leave => {
@@ -177,11 +176,11 @@ where
     /// 4. Provide client info to voice server to let it initialize the connection.
     pub async fn initialize_voice_connection(
         &mut self,
-        mut channel: Channel<S, R::Voice>,
+        channel_id: Uuid,
     ) -> anyhow::Result<Option<VoiceHandle<R::Voice, S>>> {
+        let mut channel = self.channels.get_or_init(channel_id).await?;
         tracing::debug!("announcing udp");
         // should return source_id
-        let channel_id = channel.id();
         let client_id = self.client_id;
         let msg = proto::OpenConnectionRequest {
             user_name: self.client_name.clone(),
@@ -207,7 +206,8 @@ where
         let ip = IpAddr::from_str(&addr.ip).context("Invalid IpAddr")?;
         let udp_addr = SocketAddr::from((ip, port));
         tracing::debug!("udp running on {:?}", udp_addr);
-        self.ctl.announce_udp(udp_addr).await?;
+        let source_id = resp.src_id;
+        self.ctl.announce_udp(udp_addr, source_id).await?;
         tracing::debug!("announced udp, waiting for client udp addr");
 
         let client_udp = self.ctl.await_client_udp().await?;
@@ -232,7 +232,7 @@ where
                 return Err(e.into());
             }
         };
-        let source_id = resp.src_id;
+
         let crypt_key = base64::encode(resp.crypt_key).into();
         tracing::debug!("successfully notified udp task");
         let req = proto::StatusRequest {

@@ -10,7 +10,7 @@ pub enum ClientEvent {
     Init(Init),
     Keepalive(Keepalive),
     Join(Join),
-    UdpAnnounce(Announce),
+    UdpAnnounce(ClientAnnounce),
     Leave,
     Disconnect,
 }
@@ -22,7 +22,15 @@ pub struct Init {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Announce {
+pub struct ServerAnnounce {
+    pub ip: IpAddr,
+    pub port: u16,
+    pub source_id: u32,
+}
+
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClientAnnounce {
     pub ip: IpAddr,
     pub port: u16,
 }
@@ -54,7 +62,7 @@ pub enum ServerEvent {
     Joined(Present),
     Disconnected(Disconnected),
     Left(Left),
-    UdpAnnounce(Announce),
+    UdpAnnounce(ServerAnnounce),
     JoinError(JoinError),
 }
 

@@ -33,7 +33,10 @@ message OpenConnectionRequest {
   string channel_id = 3;
 }
 
-message OpenConnectionResponse { SockAddr udp_sock = 1; }
+message OpenConnectionResponse {
+  SockAddr udp_sock = 1;
+  uint32 src_id = 2;
+}
 
 message EstablishSessionRequest {
   string user_id = 1;
@@ -42,8 +45,7 @@ message EstablishSessionRequest {
 }
 
 message EstablishSessionResponse {
-  uint32 src_id = 1;
-  bytes crypt_key = 2;
+  bytes crypt_key = 1;
 }
 
 message SockAddr {

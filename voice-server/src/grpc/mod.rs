@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use tonic::{async_trait, Status};
 
-use crate::connection::{ConnectionState, StatusResponse};
+use crate::channel::connection::{StatusResponse, ConnectionState};
 use crate::{
     ChannelNotFound, ConnectionData, EstablishSession, EstablishSessionError, OpenConnection,
     OpenConnectionError, PeerNotFound, SessionData, VoiceServerImpl,
@@ -30,7 +30,12 @@ impl proto::voice_server_server::VoiceServer for VoiceServerImpl {
     ) -> Result<tonic::Response<proto::AssignChannelResponse>, tonic::Status> {
         let req = request.into_inner();
         let channel_id = parse(&req.channel_id, "channel_id")?;
-        self.get_or_create_channel(channel_id).await;
+        tracing::info!("assigning channel {}", channel_id);
+        self.get_or_create_channel(channel_id).await.map_err(|e| {
+            tracing::warn!("failed to create channel {}", e);
+            tonic::Status::internal("failed to create channel")
+        })?;
+        tracing::info!("assigned channel {}", channel_id);
         Ok(tonic::Response::new(proto::AssignChannelResponse {}))
     }
 
@@ -111,7 +116,10 @@ impl proto::voice_server_server::VoiceServer for VoiceServerImpl {
             .get_channel(channel_id)
             .await
             .ok_or_else(|| tonic::Status::not_found("channel not hosted here"))?;
-        let peers = room.peers().await;
+        let peers = room.peers().await.map_err(|e| {
+            tracing::warn!("failed to get peers: {}", e);
+            tonic::Status::internal("failed to get peers")
+        })?;
         Ok(tonic::Response::new(proto::StatusResponse {
             info: peers
                 .into_iter()
@@ -144,9 +152,10 @@ impl From<SocketAddr> for proto::SockAddr {
 }
 
 impl From<ConnectionData> for proto::OpenConnectionResponse {
-    fn from(ConnectionData { sock }: ConnectionData) -> Self {
+    fn from(ConnectionData { sock, source_id }: ConnectionData) -> Self {
         proto::OpenConnectionResponse {
             udp_sock: Some(sock.into()),
+            src_id: source_id,
         }
     }
 }
@@ -170,6 +179,7 @@ impl From<EstablishSessionError> for tonic::Status {
         match value {
             EstablishSessionError::PeerNotFound(inner) => inner.into(),
             EstablishSessionError::Other(_) => tonic::Status::internal("internal error"),
+            EstablishSessionError::ChannelNotFound(ch) => ch.into(),
         }
     }
 }
@@ -210,8 +220,8 @@ impl TryFrom<proto::EstablishSessionRequest> for EstablishSession {
 }
 
 impl From<SessionData> for proto::EstablishSessionResponse {
-    fn from(SessionData { src_id, crypt_key }: SessionData) -> Self {
-        proto::EstablishSessionResponse { src_id, crypt_key }
+    fn from(SessionData { crypt_key }: SessionData) -> Self {
+        proto::EstablishSessionResponse { crypt_key }
     }
 }
 

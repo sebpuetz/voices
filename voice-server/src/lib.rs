@@ -1,24 +1,22 @@
+pub mod channel;
 pub mod config;
-pub mod connection;
 pub mod grpc;
 mod ports;
-use connection::{StatusResponse, VoiceTask};
-use futures_util::stream::FuturesUnordered;
+use anyhow::Context;
 pub use ports::Ports;
-use tokio_stream::StreamExt;
 use tracing::Instrument;
+
 use voices_channels::grpc::proto::channels_server::Channels;
 use voices_channels::grpc::proto::UnassignChannelRequest;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::Duration;
 
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
 
-use crate::connection::{ConnectionState, VoiceConnection, VoiceControl};
+use crate::channel::Channel;
 use crate::ports::PortRef;
 
 pub use grpc::proto::voice_server_server::VoiceServer;
@@ -56,7 +54,9 @@ impl VoiceServerImpl {
                     }
                     .instrument(tracing::info_span!("unassign_server", channel_id=?id)),
                 );
+                tracing::info!("dropped channel {}", id);
             }
+            tracing::warn!("cleanup task stopped");
         });
         Self {
             host_addr,
@@ -67,16 +67,16 @@ impl VoiceServerImpl {
     }
 
     /// Get the room identified by [`id`].
-    pub async fn get_or_create_channel(&self, id: Uuid) -> Channel {
-        self.rooms
-            .write()
-            .await
-            .entry(id)
-            .or_insert_with(|| {
-                let (voice_tx, _) = broadcast::channel(10);
-                Channel::new(id, voice_tx, self.room_tx.clone())
-            })
-            .clone()
+    pub async fn get_or_create_channel(&self, id: Uuid) -> anyhow::Result<Channel> {
+        match self.rooms.write().await.entry(id) {
+            std::collections::hash_map::Entry::Occupied(o) => Ok(o.get().to_owned()),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                // FIXME: specific error
+                let port = self.allocate_port().context("ports exhaused")?;
+                let c = Channel::new(id, self.room_tx.clone(), port).await?;
+                Ok(v.insert(c).to_owned())
+            }
+        }
     }
 
     pub async fn get_channel(&self, id: Uuid) -> Option<Channel> {
@@ -84,7 +84,7 @@ impl VoiceServerImpl {
     }
 
     /// Try to reserve a port for a voice connection.
-    pub async fn allocate_port(&self) -> Option<PortRef> {
+    pub fn allocate_port(&self) -> Option<PortRef> {
         self.ports.get()
     }
 
@@ -99,28 +99,17 @@ impl VoiceServerImpl {
             .await
             .ok_or(ChannelNotFound)?;
 
-        let port_ref = self
-            .allocate_port()
-            .await
-            .ok_or(OpenConnectionError::NoOpenPorts)?;
-        let port = port_ref.port;
-        match room
-            .join(req.client_id, req.user_name, port_ref, self.host_addr)
-            .await
-        {
-            Ok(()) => {
+        match room.open_connection(req.client_id, req.user_name).await {
+            Ok(source_id) => {
                 tracing::info!("joined channel");
                 Ok(ConnectionData {
-                    sock: SocketAddr::from((self.host_addr, port)),
+                    source_id,
+                    sock: SocketAddr::from((self.host_addr, room.port())),
                 })
             }
-            Err(JoinError::ConnectionAlreadyOpen(sock)) => {
-                tracing::warn!("client was already present");
-                Ok(ConnectionData { sock })
-            }
-            Err(JoinError::Other(inner)) => {
-                tracing::warn!(error =?inner, "failed to join channel");
-                Err(OpenConnectionError::Other(inner))
+            Err(e) => {
+                tracing::warn!("failed to open connection");
+                Err(e)
             }
         }
     }
@@ -129,11 +118,15 @@ impl VoiceServerImpl {
         &self,
         req: EstablishSession,
     ) -> Result<SessionData, EstablishSessionError> {
-        let room = self.get_or_create_channel(req.channel_id).await;
-        let ctl = room.peer(req.client_id).await?;
-        let response = ctl.init(req.client_addr).await?;
+        let channel = self
+            .get_channel(req.channel_id)
+            .await
+            .ok_or(ChannelNotFound)?;
+
+        let response = channel
+            .establish_session(req.client_id, req.client_addr)
+            .await?;
         Ok(SessionData {
-            src_id: response.source_id,
             crypt_key: response.crypt_key,
         })
     }
@@ -147,6 +140,7 @@ pub struct OpenConnection {
 
 pub struct ConnectionData {
     pub sock: SocketAddr,
+    pub source_id: u32,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -170,14 +164,23 @@ pub struct EstablishSession {
 }
 
 pub struct SessionData {
-    pub src_id: u32,
     pub crypt_key: Vec<u8>,
+}
+
+impl std::fmt::Debug for SessionData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionData")
+            .field("crypt_key", &"CENSORED")
+            .finish()
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
 pub enum EstablishSessionError {
     #[error(transparent)]
     PeerNotFound(#[from] PeerNotFound),
+    #[error(transparent)]
+    ChannelNotFound(#[from] ChannelNotFound),
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -189,7 +192,7 @@ pub struct PeerNotFound;
 #[derive(thiserror::Error, Debug)]
 pub enum JoinError {
     #[error("connection already open")]
-    ConnectionAlreadyOpen(SocketAddr),
+    ConnectionAlreadyOpen(SocketAddr, u32),
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -200,183 +203,4 @@ pub enum StatusError {
     PeerNotFound(#[from] PeerNotFound),
     #[error(transparent)]
     Other(#[from] anyhow::Error),
-}
-
-// FIXME: associate UDP socket with Room, process packets in task & broadcast incoming known messages
-#[derive(Clone)]
-pub struct Channel {
-    voice_tx: broadcast::Sender<(u32, voice_proto::Voice)>,
-    peers: Arc<RwLock<HashMap<Uuid, VoiceControl>>>,
-    handles_tx: mpsc::Sender<VoiceTask>,
-    span: tracing::Span,
-}
-
-impl Channel {
-    pub fn new(
-        room_id: Uuid,
-        voice_tx: broadcast::Sender<(u32, voice_proto::Voice)>,
-        end_notify: mpsc::Sender<Uuid>,
-    ) -> Self {
-        let span = tracing::info_span!(parent: None, "room", id = tracing::field::debug(room_id));
-        span.follows_from(None);
-        let peers: Arc<RwLock<HashMap<Uuid, VoiceControl>>> = Arc::default();
-        let peers_clone = peers.clone();
-        let (handles_tx, mut handles_rx) = mpsc::channel::<VoiceTask>(10);
-        let watcher_span = tracing::debug_span!("voice_task_watcher");
-        watcher_span.follows_from(&span);
-        tokio::spawn(
-            async move {
-                let mut handles = FuturesUnordered::new();
-                let mut iv = tokio::time::interval(Duration::from_secs(5));
-                iv.tick().await;
-                loop {
-                    tokio::select! {
-                        Some(id) = handles.next() => {
-                            tracing::debug!("task for client_id={id} ended");
-                            let mut guard = peers_clone.write().await;
-                            guard.remove(&id);
-                            if guard.is_empty() {
-                                tracing::info!("last client left the room");
-                                let _  = end_notify.send(room_id).await;
-                                break;
-                            }
-                        },
-                        task = handles_rx.recv() => {
-                            match task {
-                                Some(task) => {
-                                    tracing::debug!("received task for client_id={}", task.client_id());
-                                    handles.push(task);
-                                },
-                                None => break,
-                            }
-                        }
-                        _ = iv.tick() => {
-                            let guard = peers_clone.read().await;
-                            if guard.is_empty() {
-                                tracing::info!("no client in the room");
-                                let _  = end_notify.send(room_id).await;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            .instrument(watcher_span),
-        );
-        Self {
-            voice_tx,
-            peers,
-            handles_tx,
-            span,
-        }
-    }
-
-    #[tracing::instrument(parent = self.span.clone(), skip_all)]
-    pub async fn join(
-        &self,
-        client_id: Uuid,
-        user_name: String,
-        port: PortRef,
-        host_ip: IpAddr,
-    ) -> Result<(), JoinError> {
-        match self.peers.write().await.entry(client_id) {
-            std::collections::hash_map::Entry::Occupied(mut occ) => {
-                tracing::info!("client is already present");
-                match occ.get().status().await {
-                    Ok(StatusResponse {
-                        state: ConnectionState::Waiting,
-                        udp_addr,
-                    }) => Err(JoinError::ConnectionAlreadyOpen(udp_addr)),
-                    Ok(StatusResponse {
-                        state: ConnectionState::Peered,
-                        udp_addr: _,
-                    }) => Err(JoinError::Other(anyhow::anyhow!(
-                        "connection already initialized"
-                    ))),
-                    Err(_) => {
-                        let (control, task) = VoiceConnection::start(
-                            client_id,
-                            user_name,
-                            port,
-                            self.voice_tx.clone(),
-                            host_ip,
-                        )
-                        .instrument(self.span.clone())
-                        .await?;
-                        occ.insert(control);
-                        self.handles_tx
-                            .send(task)
-                            .await
-                            .map_err(anyhow::Error::from)?;
-                        Ok(())
-                    }
-                }
-            }
-            std::collections::hash_map::Entry::Vacant(v) => {
-                let (control, task) = VoiceConnection::start(
-                    client_id,
-                    user_name,
-                    port,
-                    self.voice_tx.clone(),
-                    host_ip,
-                )
-                .instrument(self.span.clone())
-                .await?;
-                v.insert(control);
-                self.handles_tx
-                    .send(task)
-                    .await
-                    .map_err(anyhow::Error::from)?;
-                tracing::debug!("stored voice control");
-                Ok(())
-            }
-        }
-    }
-
-    pub async fn peers(&self) -> Vec<(Uuid, u32, String)> {
-        let mut peers = Vec::new();
-
-        let ctls = self
-            .peers
-            .read()
-            .await
-            .iter()
-            .map(|(id, ctl)| (*id, ctl.to_owned()))
-            .collect::<Vec<_>>();
-        for (id, ctl) in ctls {
-            if matches!(
-                ctl.status().await,
-                Ok(StatusResponse {
-                    state: ConnectionState::Peered,
-                    ..
-                })
-            ) {
-                peers.push((id, ctl.source_id(), ctl.user_name().into()));
-            }
-        }
-        peers
-    }
-
-    pub async fn peer(&self, client_id: Uuid) -> Result<VoiceControl, PeerNotFound> {
-        self.peers
-            .read()
-            .await
-            .get(&client_id)
-            .cloned()
-            .ok_or(PeerNotFound)
-    }
-
-    pub async fn status(&self, client_id: Uuid) -> Result<StatusResponse, StatusError> {
-        let ctl = self.peer(client_id).await?;
-        ctl.status().await.map_err(Into::into)
-    }
-
-    pub async fn leave(&self, client_id: Uuid) -> Option<()> {
-        let ctl = {
-            let mut peers = self.peers.write().await;
-            peers.remove(&client_id)?
-        };
-        ctl.stop().await;
-        Some(())
-    }
 }

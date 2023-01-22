@@ -1,18 +1,16 @@
-use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use rand::thread_rng;
-use tokio::net::UdpSocket;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 use udp_proto::UdpWithBuf;
 use uuid::Uuid;
-use voice_proto::IpDiscoveryResponse;
 use voices_crypto::VoiceCrypto;
 use xsalsa20poly1305::{Key, KeyInit, XSalsa20Poly1305};
 
-use crate::ports::PortRef;
+use super::InternalMsg;
 
 #[derive(Clone, Debug)]
 pub struct VoiceControl {
@@ -120,21 +118,18 @@ pub struct StatusRequest {
 #[derive(Debug)]
 pub struct StatusResponse {
     pub state: ConnectionState,
-    pub udp_addr: SocketAddr,
 }
 
 impl StatusResponse {
-    pub fn peered(udp_addr: SocketAddr) -> Self {
+    pub fn peered() -> Self {
         Self {
             state: ConnectionState::Peered,
-            udp_addr,
         }
     }
 
-    pub fn waiting(udp_addr: SocketAddr) -> Self {
+    pub fn waiting() -> Self {
         Self {
             state: ConnectionState::Waiting,
-            udp_addr,
         }
     }
 }
@@ -148,6 +143,7 @@ pub enum ConnectionState {
 pub struct VoiceTask {
     handle: JoinHandle<()>,
     client_id: Uuid,
+    src_id: u32,
 }
 
 impl std::fmt::Debug for VoiceTask {
@@ -159,53 +155,56 @@ impl std::fmt::Debug for VoiceTask {
 }
 
 impl VoiceTask {
-    pub fn new(handle: JoinHandle<()>, client_id: Uuid) -> Self {
-        Self { handle, client_id }
+    pub fn new(handle: JoinHandle<()>, client_id: Uuid, src_id: u32) -> Self {
+        Self {
+            handle,
+            client_id,
+            src_id,
+        }
     }
 
     pub fn client_id(&self) -> Uuid {
         self.client_id
     }
+
+    pub fn src_id(&self) -> u32 {
+        self.src_id
+    }
 }
 
 impl std::future::Future for VoiceTask {
-    type Output = Uuid;
+    type Output = (u32, Uuid);
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         let id = self.client_id;
-        std::pin::Pin::new(&mut self.handle).poll(cx).map(|_| id)
+        let sid = self.src_id;
+        std::pin::Pin::new(&mut self.handle)
+            .poll(cx)
+            .map(|_| (sid, id))
     }
 }
 
 pub struct VoiceConnection {
     udp: UdpWithBuf,
+    msg_rx: mpsc::Receiver<InternalMsg>,
     control_chan: mpsc::Receiver<ControlRequest>,
     voice_tx: broadcast::Sender<(u32, voice_proto::Voice)>,
     client_id: Uuid,
     source_id: u32,
     crypt_key: Key,
-    host_ip: IpAddr,
-    port: PortRef,
 }
 
 impl VoiceConnection {
-    pub async fn start(
+    pub(super) fn start(
         client_id: Uuid,
         user_name: String,
-        port: PortRef,
+        msg_rx: mpsc::Receiver<InternalMsg>,
         voice_tx: broadcast::Sender<(u32, voice_proto::Voice)>,
-        host_ip: IpAddr,
-    ) -> anyhow::Result<(VoiceControl, VoiceTask)> {
-        let sock = UdpSocket::bind(SocketAddr::from((Ipv6Addr::UNSPECIFIED, port.port)))
-            .await
-            .map_err(|e| {
-                tracing::error!(error=?e, "Failed to bind port");
-                e
-            })?;
-        let udp = UdpWithBuf::new(sock);
+        udp: UdpWithBuf,
+    ) -> (VoiceControl, VoiceTask) {
         let (tx, rx) = mpsc::channel(10);
         let source_id = rand::random();
         let crypt_key = XSalsa20Poly1305::generate_key(&mut thread_rng());
@@ -215,40 +214,25 @@ impl VoiceConnection {
             crypt_key,
             client_id,
             source_id,
-            port,
+            msg_rx,
             voice_tx,
-            host_ip,
         };
         let handle = tokio::spawn(slf.run().instrument(tracing::Span::current()));
-        let task = VoiceTask::new(handle, client_id);
+        let task = VoiceTask::new(handle, client_id, source_id);
         let tx = VoiceControl {
             source_id,
             user_name,
             tx,
         };
-        Ok((tx, task))
+        (tx, task)
     }
 
     #[tracing::instrument(name="voice_run", skip(self), fields(client_id=%self.client_id, source_id=%self.source_id))]
     pub async fn run(mut self) {
+        tracing::info!("starting voice task");
         let mut init_timeout = Box::pin(tokio::time::sleep(Duration::from_secs(15)));
         loop {
             tokio::select! {
-                packet = self.udp.recv_from() => {
-                    match packet {
-                        Ok((addr, msg)) => {
-                            if let Err(e) = self.ip_discovery(addr, msg).await {
-                                tracing::warn!("ip disco failed: {}", e);
-                                return;
-                            } else {
-                                tracing::info!("Succesfully handled ip disco");
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("{}", e);
-                        }
-                    }
-                },
                 addr = self.control_chan.recv() => {
                     match addr {
                         Some(ControlRequest::Init(init_msg)) => {
@@ -266,7 +250,7 @@ impl VoiceConnection {
                             return;
                         },
                         Some(ControlRequest::Status(status)) => {
-                            let response = StatusResponse::waiting(SocketAddr::from((self.host_ip, self.port.port)));
+                            let response = StatusResponse::waiting();
                             let _ = status.responder.send(response);
                             continue;
                         }
@@ -285,29 +269,7 @@ impl VoiceConnection {
         }
     }
 
-    async fn ip_discovery(
-        &mut self,
-        addr: SocketAddr,
-        req: voice_proto::IpDiscoveryRequest,
-    ) -> anyhow::Result<()> {
-        tracing::debug!("handling discovery from {}", addr);
-        let uuid = req.uuid;
-        anyhow::ensure!(
-            self.client_id == Uuid::from_slice(&uuid)?,
-            "bad id: {:?}",
-            std::str::from_utf8(&uuid)
-        );
-        let response = IpDiscoveryResponse {
-            ip: addr.ip().to_string(),
-            port: addr.port() as _,
-        };
-        self.udp.send_to(&response, addr).await?;
-        tracing::debug!("succesfully handled discovery from {}", addr);
-        Ok(())
-    }
-
     async fn peered(mut self, addr: SocketAddr) -> anyhow::Result<()> {
-        self.udp.connect(addr).await?;
         tracing::info!("successfully peered with {addr}");
         let cipher = XSalsa20Poly1305::new(&self.crypt_key);
         let source_id = self.source_id;
@@ -318,36 +280,28 @@ impl VoiceConnection {
         let mut voice_rx = self.voice_tx.subscribe();
         loop {
             tokio::select! {
-                    udp_pkt = self.udp.recv::<voice_proto::ClientMessage>() => {
+                    udp_pkt = self.msg_rx.recv() => {
                         match udp_pkt {
-                            Ok(msg) => {
-                                match msg.payload {
-                                    Some(voice_proto::client_message::Payload::Voice(mut voice)) => {
-                                        cipher.decrypt(&mut voice.payload, voice.sequence, voice.stream_time).map_err(|e| {
-                                            tracing::error!(error=?e, "Failed to decrypt");
-                                            e
-                                        })?;
-                                        received += 1;
-                                        if voice.sequence < seq {
-                                            tracing::debug!(seq, voice.sequence, "out of order voice");
-                                        }
-                                        seq = voice.sequence;
-                                        let _ = self.voice_tx.send((source_id, voice));
-                                    },
-                                    Some(voice_proto::client_message::Payload::Ping(ping)) => {
-                                        ping_deadline = Instant::now() + Duration::from_secs(15);
-                                        // FIXME: stats are unreliable
-                                        tracing::debug!(seq, received);
-                                        let pong = voice_proto::ServerMessage::pong(voice_proto::Pong { seq: ping.seq, sent, received });
-                                        self.udp.send(&pong).await?;
-                                    },
-                                    None => {
-                                        tracing::warn!("client didn't send payload");
-                                        return Ok(())
-                                    },
+                            Some(InternalMsg::Voice(mut voice)) => {
+                                cipher.decrypt(&mut voice.payload, voice.sequence, voice.stream_time).map_err(|e| {
+                                    tracing::error!(error=?e, "Failed to decrypt");
+                                    e
+                                })?;
+                                received += 1;
+                                if voice.sequence < seq {
+                                    tracing::debug!(seq, voice.sequence, "out of order voice");
                                 }
-                            }
-                            Err(e) => return Err(e.into()),
+                                seq = voice.sequence;
+                                let _ = self.voice_tx.send((source_id, voice));
+                            },
+                            Some(InternalMsg::Ping(ping)) => {
+                                ping_deadline = Instant::now() + Duration::from_secs(15);
+                                // FIXME: stats are unreliable
+                                tracing::debug!(seq, received);
+                                let pong = voice_proto::ServerMessage::pong(voice_proto::Pong { seq: ping.seq, sent, received });
+                                self.udp.send_to(&pong, addr).await?;
+                            },
+                            None => todo!(),
                         }
                     },
                     recv = voice_rx.recv() => {
@@ -359,7 +313,7 @@ impl VoiceConnection {
                                     continue;
                                 }
                                 cipher.encrypt(&mut voice.payload, voice.sequence, voice.stream_time)?;
-                                let voice = voice_proto::ServerMessage::voice(voice, rx_pkt_id);
+                                let voice = voice_proto::ServerMessage::voice(voice);
                                 self.udp.send(&voice).await?;
                                 sent += 1;
                             },
@@ -380,11 +334,10 @@ impl VoiceConnection {
                         match ctl {
                             Some(ControlRequest::Init(init)) => {
                                 tracing::info!("repeated init message");
-                                self.udp.connect(init.client_addr).await?;
                                 let _ = init.responder.send(InitResponse { crypt_key: self.crypt_key.to_vec(), source_id: self.source_id});
                             }
                             Some(ControlRequest::Status(status)) => {
-                                let response = StatusResponse::peered(SocketAddr::from((self.host_ip, self.port.port)));
+                                let response = StatusResponse::peered();
                                 let _ = status.responder.send(response);
                                 continue;
                             }

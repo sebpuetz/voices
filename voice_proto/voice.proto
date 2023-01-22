@@ -2,49 +2,53 @@ syntax = "proto3";
 package voice;
 
 message IpDiscoveryRequest {
-    bytes uuid = 1;
+  bytes uuid = 1;
+  uint32 source_id = 2;
 }
 
 message IpDiscoveryResponse {
-    string ip = 1;
-    uint32 port = 2;
+  string ip = 1;
+  uint32 port = 2;
 }
 
 message Voice {
-    uint64 sequence = 1;
-    uint64 stream_time = 2;
-    bytes payload = 3;
+  uint64 sequence = 1;
+  uint64 stream_time = 2;
+  uint32 source_id = 3;
+  bytes payload = 4;
 }
 
-message ServerVoice {
-    uint64 sequence = 1;
-    uint64 stream_time = 2;
-    uint32 source_id = 3;
-    bytes payload = 4;
-}
+// message ServerVoice {
+//   uint64 sequence = 1;
+//   uint64 stream_time = 2;
+//   bytes payload = 4;
+// }
 
 message Ping {
-    uint64 seq = 1;
-    uint64 recv = 2;
-    uint64 sent = 3;
+  uint64 seq = 1;
+  uint64 recv = 2;
+  uint64 sent = 3;
+  uint32 source_id = 4;
 }
 
 message Pong {
-    uint64 seq = 1;
-    uint64 sent = 2;
-    uint64 received = 3;
+  uint64 seq = 1;
+  uint64 sent = 2;
+  uint64 received = 3;
 }
 
 message ClientMessage {
-    oneof Payload {
-        Ping ping = 1;
-        Voice voice = 2;
-    }
+  oneof Payload {
+    Ping ping = 1;
+    Voice voice = 2;
+    IpDiscoveryRequest ip_disco = 3;
+  }
 }
 
 message ServerMessage {
-    oneof message {
-        Pong pong = 1;
-        ServerVoice voice = 2;
-    }
+  oneof message {
+    Pong pong = 1;
+    Voice voice = 2;
+    IpDiscoveryResponse ip_disco = 3;
+  }
 }

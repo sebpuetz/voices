@@ -44,6 +44,8 @@ pub struct OpenConnectionRequest {
 pub struct OpenConnectionResponse {
     #[prost(message, optional, tag = "1")]
     pub udp_sock: ::core::option::Option<SockAddr>,
+    #[prost(uint32, tag = "2")]
+    pub src_id: u32,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -58,9 +60,7 @@ pub struct EstablishSessionRequest {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct EstablishSessionResponse {
-    #[prost(uint32, tag = "1")]
-    pub src_id: u32,
-    #[prost(bytes = "vec", tag = "2")]
+    #[prost(bytes = "vec", tag = "1")]
     pub crypt_key: ::prost::alloc::vec::Vec<u8>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
