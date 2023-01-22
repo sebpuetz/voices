@@ -53,7 +53,7 @@ impl ControlStream {
     }
 
     pub async fn announce_udp(&self, socket: SocketAddr) -> Result<(), ControlStreamError> {
-        self.send(ClientEvent::UdpAnnounce(Announce {
+        self.send(ClientEvent::UdpAnnounce(ClientAnnounce {
             ip: socket.ip(),
             port: socket.port(),
         }))
@@ -71,7 +71,7 @@ impl ControlStream {
         self.inc.recv().await.ok_or(ControlStreamError::End)
     }
 
-    pub async fn await_voice_udp(&mut self) -> Result<Announce, ControlStreamError> {
+    pub async fn await_voice_udp(&mut self) -> Result<ServerAnnounce, ControlStreamError> {
         match self.next_event().await? {
             ServerEvent::UdpAnnounce(init) => Ok(init),
             evt => Err(ControlStreamError::UnexpectedMessage {
