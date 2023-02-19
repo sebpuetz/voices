@@ -1,13 +1,15 @@
 pub mod channel;
 pub mod config;
 pub mod grpc;
+pub mod registry;
+pub mod server;
+
 mod ports;
 use anyhow::Context;
+use channel::connection::ConnectionState;
 pub use ports::Ports;
+use registry::Register;
 use tracing::Instrument;
-
-use voices_channels::grpc::proto::channels_server::Channels;
-use voices_channels::grpc::proto::UnassignChannelRequest;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -25,62 +27,82 @@ pub use grpc::proto::voice_server_server::VoiceServer;
 pub struct VoiceServerImpl {
     host_addr: IpAddr,
     ports: Ports,
-    rooms: Arc<RwLock<HashMap<Uuid, Channel>>>,
-    room_tx: mpsc::Sender<Uuid>,
+    channels: Arc<RwLock<HashMap<Uuid, Channel>>>,
+    channels_cleanup_tx: mpsc::Sender<Uuid>,
 }
 
 impl VoiceServerImpl {
-    pub fn new(host_addr: IpAddr, ports: Ports, channels: Arc<dyn Channels>) -> Self {
+    pub fn new(host_addr: IpAddr, ports: Ports, registry: Option<Arc<dyn Register>>) -> Self {
         let (room_tx, mut room_rx) = mpsc::channel(10);
         let rooms: Arc<RwLock<HashMap<Uuid, Channel>>> = Arc::default();
         let rooms_handle = rooms.clone();
-        tokio::spawn(async move {
-            while let Some(id) = room_rx.recv().await {
-                rooms_handle.write().await.remove(&id);
-                let channels = channels.clone();
-                tokio::spawn(
-                    async move {
-                        let message = UnassignChannelRequest {
-                            channel_id: id.to_string(),
-                        };
-                        let request = tonic::Request::new(message);
-                        channels
-                            .clone()
-                            .unassign_channel(request)
-                            .await
-                            .map_err(|e| {
-                                tracing::warn!("failed to unassign self from channel {}", e);
-                            })
+        match registry {
+            Some(registry) => {
+                tokio::spawn(async move {
+                    // cleanup task for stopped channels
+                    while let Some(id) = room_rx.recv().await {
+                        rooms_handle.write().await.remove(&id);
+                        tracing::info!("removed channel from local registry {}", id);
+                        let channels = registry.clone();
+                        tokio::spawn(
+                            async move {
+                                // deregister channel from voice server
+                                match channels.unassign_channel(id).await {
+                                    Ok(_) => {
+                                        tracing::info!("dropped channel {}", id);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "failed to unassign self from channel {}",
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                            .instrument(tracing::info_span!("unassign_server", channel_id=?id)),
+                        );
                     }
-                    .instrument(tracing::info_span!("unassign_server", channel_id=?id)),
-                );
-                tracing::info!("dropped channel {}", id);
+                    tracing::warn!("cleanup task stopped");
+                });
             }
-            tracing::warn!("cleanup task stopped");
-        });
+            None => {
+                tokio::spawn(async move {
+                    // cleanup task for stopped channels
+                    while let Some(id) = room_rx.recv().await {
+                        rooms_handle.write().await.remove(&id);
+                        tracing::info!("dropped channel {}", id);
+                    }
+                });
+            }
+        };
         Self {
             host_addr,
             ports,
-            rooms,
-            room_tx,
+            channels: rooms,
+            channels_cleanup_tx: room_tx,
         }
     }
 
     /// Get the room identified by [`id`].
-    pub async fn get_or_create_channel(&self, id: Uuid) -> anyhow::Result<Channel> {
-        match self.rooms.write().await.entry(id) {
+    pub async fn assign_channel_impl(&self, id: Uuid) -> anyhow::Result<Channel> {
+        match self.channels.write().await.entry(id) {
             std::collections::hash_map::Entry::Occupied(o) => Ok(o.get().to_owned()),
             std::collections::hash_map::Entry::Vacant(v) => {
                 // FIXME: specific error
                 let port = self.allocate_port().context("ports exhaused")?;
-                let c = Channel::new(id, self.room_tx.clone(), port).await?;
+                let c = Channel::new(id, self.channels_cleanup_tx.clone(), port).await?;
                 Ok(v.insert(c).to_owned())
             }
         }
     }
 
     pub async fn get_channel(&self, id: Uuid) -> Option<Channel> {
-        self.rooms.read().await.get(&id).cloned()
+        self.channels
+            .read()
+            .await
+            .get(&id)
+            .cloned()
+            .filter(|c| c.healthy())
     }
 
     /// Try to reserve a port for a voice connection.
@@ -130,14 +152,51 @@ impl VoiceServerImpl {
             crypt_key: response.crypt_key,
         })
     }
+
+    pub async fn leave_impl(&self, channel_id: Uuid, client_id: Uuid) -> Result<(), LeaveError> {
+        let room = self.get_channel(channel_id).await.ok_or(ChannelNotFound)?;
+        room.leave(client_id).await.ok_or(PeerNotFound)?;
+        Ok(())
+    }
+
+    pub async fn user_status_impl(
+        &self,
+        channel_id: Uuid,
+        client_id: Uuid,
+    ) -> Result<ConnectionState, StatusError> {
+        let room = self.get_channel(channel_id).await.ok_or(ChannelNotFound)?;
+        Ok(room
+            .status(client_id)
+            .await
+            .map_err(|e| {
+                tracing::warn!("voice status bad: {}", e);
+                e
+            })?
+            .state)
+    }
+
+    pub async fn status_impl(&self, channel_id: Uuid) -> Result<Vec<Peer>, StatusError> {
+        let room = self.get_channel(channel_id).await.ok_or(ChannelNotFound)?;
+        if !room.healthy() {
+            // FIXME
+            return Err(ChannelNotFound.into());
+        }
+        let peers = room.peers().await.map_err(|e| {
+            tracing::warn!("failed to get peers: {}", e);
+            anyhow::anyhow!("failed to get peers")
+        })?;
+        Ok(peers)
+    }
 }
 
+#[derive(Debug)]
 pub struct OpenConnection {
     pub user_name: String,
     pub channel_id: Uuid,
     pub client_id: Uuid,
 }
 
+#[derive(Debug)]
 pub struct ConnectionData {
     pub sock: SocketAddr,
     pub source_id: u32,
@@ -154,9 +213,18 @@ pub enum OpenConnectionError {
 }
 
 #[derive(thiserror::Error, Debug)]
+pub enum LeaveError {
+    #[error(transparent)]
+    ChannelNotFound(#[from] ChannelNotFound),
+    #[error(transparent)]
+    PeerNotFound(#[from] PeerNotFound),
+}
+
+#[derive(thiserror::Error, Debug)]
 #[error("channel not hosted here")]
 pub struct ChannelNotFound;
 
+#[derive(Debug)]
 pub struct EstablishSession {
     pub channel_id: Uuid,
     pub client_id: Uuid,
@@ -173,6 +241,13 @@ impl std::fmt::Debug for SessionData {
             .field("crypt_key", &"CENSORED")
             .finish()
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Peer {
+    pub id: Uuid,
+    pub source_id: u32,
+    pub name: String,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -202,5 +277,10 @@ pub enum StatusError {
     #[error(transparent)]
     PeerNotFound(#[from] PeerNotFound),
     #[error(transparent)]
+    ChannelNotFound(#[from] ChannelNotFound),
+    #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
+
+#[cfg(test)]
+mod test;

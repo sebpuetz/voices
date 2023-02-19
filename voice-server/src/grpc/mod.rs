@@ -3,10 +3,11 @@ use std::str::FromStr;
 
 use tonic::{async_trait, Status};
 
-use crate::channel::connection::{StatusResponse, ConnectionState};
+use crate::channel::connection::ConnectionState;
 use crate::{
-    ChannelNotFound, ConnectionData, EstablishSession, EstablishSessionError, OpenConnection,
-    OpenConnectionError, PeerNotFound, SessionData, VoiceServerImpl,
+    ChannelNotFound, ConnectionData, EstablishSession, EstablishSessionError, LeaveError,
+    OpenConnection, OpenConnectionError, Peer, PeerNotFound, SessionData, StatusError,
+    VoiceServerImpl,
 };
 
 pub mod client;
@@ -31,7 +32,7 @@ impl proto::voice_server_server::VoiceServer for VoiceServerImpl {
         let req = request.into_inner();
         let channel_id = parse(&req.channel_id, "channel_id")?;
         tracing::info!("assigning channel {}", channel_id);
-        self.get_or_create_channel(channel_id).await.map_err(|e| {
+        self.assign_channel_impl(channel_id).await.map_err(|e| {
             tracing::warn!("failed to create channel {}", e);
             tonic::Status::internal("failed to create channel")
         })?;
@@ -65,7 +66,6 @@ impl proto::voice_server_server::VoiceServer for VoiceServerImpl {
         Ok(tonic::Response::new(response.into()))
     }
 
-    // FIXME: move logic to VoiceServerImpl
     async fn leave(
         &self,
         request: tonic::Request<proto::LeaveRequest>,
@@ -73,8 +73,7 @@ impl proto::voice_server_server::VoiceServer for VoiceServerImpl {
         let req = request.into_inner();
         let client_id = parse(&req.user_id, "user_id")?;
         let channel_id = parse(&req.channel_id, "channel_id")?;
-        let room = self.get_channel(channel_id).await.ok_or(ChannelNotFound)?;
-        room.leave(client_id).await.ok_or(PeerNotFound)?;
+        self.leave_impl(channel_id, client_id).await?;
         Ok(tonic::Response::new(proto::LeaveResponse {}))
     }
 
@@ -86,23 +85,9 @@ impl proto::voice_server_server::VoiceServer for VoiceServerImpl {
         let req = request.into_inner();
         let client_id = parse(&req.user_id, "user_id")?;
         let channel_id = parse(&req.channel_id, "channel_id")?;
-        let room = self.get_channel(channel_id).await.ok_or(ChannelNotFound)?;
-        let status = match room.status(client_id).await {
-            Err(e) => {
-                tracing::warn!("voice status bad: {}", e);
-                proto::user_status_response::Status::Error(())
-            }
-            Ok(StatusResponse {
-                state: ConnectionState::Peered,
-                ..
-            }) => proto::user_status_response::Status::Peered(()),
-            Ok(StatusResponse {
-                state: ConnectionState::Waiting,
-                ..
-            }) => proto::user_status_response::Status::Peered(()),
-        };
+        let status = self.user_status_impl(channel_id, client_id).await?;
         Ok(tonic::Response::new(proto::UserStatusResponse {
-            status: Some(status),
+            status: Some(status.into()),
         }))
     }
 
@@ -112,22 +97,21 @@ impl proto::voice_server_server::VoiceServer for VoiceServerImpl {
     ) -> Result<tonic::Response<proto::StatusResponse>, tonic::Status> {
         let req = request.into_inner();
         let channel_id = parse(&req.channel_id, "channel_id")?;
-        let room = self
-            .get_channel(channel_id)
-            .await
-            .ok_or_else(|| tonic::Status::not_found("channel not hosted here"))?;
-        let peers = room.peers().await.map_err(|e| {
-            tracing::warn!("failed to get peers: {}", e);
-            tonic::Status::internal("failed to get peers")
-        })?;
+        let peers = self.status_impl(channel_id).await?;
         Ok(tonic::Response::new(proto::StatusResponse {
             info: peers
                 .into_iter()
-                .map(|(client_id, src_id, user_name)| proto::ClientInfo {
-                    client_id: client_id.to_string(),
-                    src_id,
-                    name: user_name,
-                })
+                .map(
+                    |Peer {
+                         id: client_id,
+                         source_id: src_id,
+                         name,
+                     }| proto::ClientInfo {
+                        client_id: client_id.to_string(),
+                        src_id,
+                        name,
+                    },
+                )
                 .collect(),
         }))
     }
@@ -183,6 +167,23 @@ impl From<EstablishSessionError> for tonic::Status {
         }
     }
 }
+impl From<LeaveError> for tonic::Status {
+    fn from(value: LeaveError) -> Self {
+        match value {
+            LeaveError::PeerNotFound(inner) => inner.into(),
+            LeaveError::ChannelNotFound(ch) => ch.into(),
+        }
+    }
+}
+impl From<StatusError> for tonic::Status {
+    fn from(value: StatusError) -> Self {
+        match value {
+            StatusError::PeerNotFound(inner) => inner.into(),
+            StatusError::ChannelNotFound(ch) => ch.into(),
+            StatusError::Other(_) => tonic::Status::internal("internal error"),
+        }
+    }
+}
 
 impl From<PeerNotFound> for tonic::Status {
     fn from(value: PeerNotFound) -> Self {
@@ -222,6 +223,16 @@ impl TryFrom<proto::EstablishSessionRequest> for EstablishSession {
 impl From<SessionData> for proto::EstablishSessionResponse {
     fn from(SessionData { crypt_key }: SessionData) -> Self {
         proto::EstablishSessionResponse { crypt_key }
+    }
+}
+
+impl From<ConnectionState> for proto::user_status_response::Status {
+    fn from(value: ConnectionState) -> Self {
+        match value {
+            ConnectionState::Waiting => proto::user_status_response::Status::Waiting(()),
+            ConnectionState::Peered => proto::user_status_response::Status::Peered(()),
+            ConnectionState::Stopped => proto::user_status_response::Status::Error(()),
+        }
     }
 }
 

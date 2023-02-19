@@ -54,7 +54,7 @@ impl UdpSetup {
             Ok(external_addr)
         } else {
             tracing::warn!("expected ip disco response, got something different");
-            return Err(SetupError::BadData);
+            Err(SetupError::BadData)
         }
     }
 

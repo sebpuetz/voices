@@ -3,7 +3,6 @@ pub mod server;
 mod util;
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use axum::extract::ws::WebSocket;
 use axum::http::{HeaderValue, Method};
@@ -103,7 +102,7 @@ async fn main_() -> anyhow::Result<()> {
                 ))
             };
             let channels_impl = channels_config.server().await?;
-            let voice = voice_config.server(Arc::new(channels_impl.clone())).await?;
+            let voice = voice_config.server().await?;
             let local_registry = LocalChannelRegistry::new(channels_impl, voice);
             let channels = Channels::new(room_init, local_registry);
             serve(ctl_listener, channels).await

@@ -2,7 +2,6 @@ pub mod config;
 pub mod mic;
 mod play;
 mod udp;
-mod ws;
 
 use std::net::SocketAddr;
 
@@ -13,10 +12,9 @@ use tracing_log::LogTracer;
 use tracing_subscriber::prelude::*;
 use uuid::Uuid;
 use voices_crypto::xsalsa20poly1305;
+use voices_ws_proto::client::ControlStream;
 use voices_ws_proto::*;
 use xsalsa20poly1305::KeyInit;
-
-use ws::ControlStream;
 
 use crate::config::Config;
 
@@ -45,7 +43,11 @@ async fn async_main_() -> anyhow::Result<()> {
 
     let channel_id = config.room_id.unwrap_or_else(Uuid::new_v4);
     stream.join(channel_id).await?;
-    let ServerAnnounce { ip, port, source_id } = stream.await_voice_udp().await?;
+    let ServerAnnounce {
+        ip,
+        port,
+        source_id,
+    } = stream.await_voice_udp().await?;
     let remote_udp = SocketAddr::from((ip, port));
     tracing::debug!("connecting UDP to {}", remote_udp);
     let mut udp = udp::UdpSetup::new(remote_udp, user_id).await?;

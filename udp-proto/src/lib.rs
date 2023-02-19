@@ -73,7 +73,6 @@ impl UdpWithBuf {
             .map_err(Into::into)
             .map(|m| (addr, m))
     }
-
 }
 
 #[derive(thiserror::Error, Debug)]

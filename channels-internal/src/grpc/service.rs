@@ -47,6 +47,7 @@ impl Channels for ChannelsImpl {
         ))
     }
 
+    #[tracing::instrument(skip_all, fields(voice_server_id=%request.get_ref().id))]
     async fn register_voice_server(
         &self,
         request: tonic::Request<proto::RegisterVoiceServerRequest>,
@@ -129,6 +130,7 @@ impl Channels for ChannelsImpl {
         }))
     }
 
+    #[tracing::instrument(skip_all, fields(channel_id=%request.get_ref().channel_id))]
     async fn get_channel(
         &self,
         request: tonic::Request<proto::GetChannelRequest>,
@@ -142,7 +144,10 @@ impl Channels for ChannelsImpl {
             Some(id) => VoiceServer::get_active(id, &self.db)
                 .await?
                 .map(|v| v.host_url),
-            None => None,
+            None => {
+                tracing::info!("channel currently unassigned");
+                None
+            }
         };
         Ok(tonic::Response::new(proto::GetChannelResponse {
             channel_id: c.id.to_string(),
@@ -151,6 +156,7 @@ impl Channels for ChannelsImpl {
         }))
     }
 
+    #[tracing::instrument(skip_all, fields(channel_id=%request.get_ref().channel_id))]
     async fn assign_channel(
         &self,
         request: tonic::Request<proto::AssignChannelRequest>,
@@ -164,8 +170,7 @@ impl Channels for ChannelsImpl {
                 tonic::Status::internal("no voice servers registered")
             })?;
         tracing::info!(
-            "assigning channel {} to voice server {:?} with load={}",
-            id,
+            "assigned channel to voice server {:?} with load={}",
             srv,
             load
         );
@@ -183,7 +188,8 @@ impl Channels for ChannelsImpl {
     ) -> Result<tonic::Response<proto::UnassignChannelResponse>, tonic::Status> {
         let req = request.into_inner();
         let id = parse(&req.channel_id, "channel_id")?;
-        Channel::unassign(id, &self.db).await?;
+        let sid = parse(&req.server_id, "server_id")?;
+        Channel::unassign(id, sid, &self.db).await?;
         tracing::info!("unassigned channel {:?}", id);
         Ok(tonic::Response::new(proto::UnassignChannelResponse {}))
     }

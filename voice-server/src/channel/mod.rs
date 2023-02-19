@@ -15,19 +15,23 @@ use uuid::Uuid;
 use voice_proto::*;
 
 use crate::ports::PortRef;
-use crate::{ChannelNotFound, EstablishSessionError, OpenConnectionError, StatusError};
+use crate::{
+    ChannelNotFound, EstablishSessionError, OpenConnectionError, Peer, PeerNotFound, StatusError,
+};
 
 use self::connection::{
     ConnectionState, InitResponse, StatusResponse, VoiceConnection, VoiceControl, VoiceTask,
 };
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Channel {
     channel_ctl: mpsc::Sender<ChannelCtl>,
     port: Arc<PortRef>,
 }
 
 impl Channel {
+    pub(crate) const CHANNEL_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
+
     pub async fn new(
         room_id: Uuid,
         end_notify: mpsc::Sender<Uuid>,
@@ -37,11 +41,8 @@ impl Channel {
         let socket = UdpWithBuf::bind(sock_addr).await?;
         let (fwd, channel_ctl) = Forwarder::new(socket, end_notify, room_id);
         tokio::spawn(async move {
-            if let Err(e) = fwd.run().await {
-                tracing::warn!("forwarder died: {}", e);
-            } else {
-                tracing::info!("forwarder exitted with OK status")
-            }
+            fwd.run().await;
+            tracing::info!("forwarder exitted")
         });
         Ok(Self {
             channel_ctl,
@@ -67,7 +68,7 @@ impl Channel {
             tracing::warn!("failed to establish session");
             EstablishSessionError::Other(anyhow::anyhow!("failed to open connection"))
         })?;
-        Ok(resp)
+        resp
     }
 
     #[tracing::instrument(skip_all)]
@@ -88,7 +89,7 @@ impl Channel {
         Ok(resp)
     }
 
-    pub async fn peers(&self) -> anyhow::Result<Vec<(Uuid, u32, String)>> {
+    pub async fn peers(&self) -> anyhow::Result<Vec<Peer>> {
         let (msg, rx) = ChannelCtl::peers();
         self.channel_ctl.send(msg).await?;
         let resp = rx.await?;
@@ -102,13 +103,17 @@ impl Channel {
             .await
             .context("failed sending channel request")?;
         let resp = rx.await.context("status response failed")?;
-        Ok(resp)
+        resp
     }
 
     pub async fn leave(&self, client_id: Uuid) -> Option<()> {
         let (msg, rx) = ChannelCtl::leave(client_id);
         let _ = self.channel_ctl.send(msg).await;
         rx.await.ok()
+    }
+
+    pub fn healthy(&self) -> bool {
+        !self.channel_ctl.is_closed()
     }
 }
 
@@ -122,18 +127,18 @@ enum ChannelCtl {
     Establish {
         client_id: Uuid,
         client_addr: SocketAddr,
-        responder: oneshot::Sender<InitResponse>,
+        responder: oneshot::Sender<Result<InitResponse, EstablishSessionError>>,
     },
     Leave {
         client_id: Uuid,
         responder: oneshot::Sender<()>,
     },
     Peers {
-        responder: oneshot::Sender<Vec<(Uuid, u32, String)>>,
+        responder: oneshot::Sender<Vec<Peer>>,
     },
     Status {
         client_id: Uuid,
-        responder: oneshot::Sender<StatusResponse>,
+        responder: oneshot::Sender<Result<StatusResponse, StatusError>>,
     },
 }
 
@@ -153,7 +158,10 @@ impl ChannelCtl {
     fn establish(
         client_id: Uuid,
         client_addr: SocketAddr,
-    ) -> (Self, oneshot::Receiver<InitResponse>) {
+    ) -> (
+        Self,
+        oneshot::Receiver<Result<InitResponse, EstablishSessionError>>,
+    ) {
         let (responder, rx) = oneshot::channel();
         (
             Self::Establish {
@@ -176,12 +184,12 @@ impl ChannelCtl {
         )
     }
 
-    fn peers() -> (Self, oneshot::Receiver<Vec<(Uuid, u32, String)>>) {
+    fn peers() -> (Self, oneshot::Receiver<Vec<Peer>>) {
         let (responder, rx) = oneshot::channel();
         (Self::Peers { responder }, rx)
     }
 
-    fn status(client_id: Uuid) -> (Self, oneshot::Receiver<StatusResponse>) {
+    fn status(client_id: Uuid) -> (Self, oneshot::Receiver<Result<StatusResponse, StatusError>>) {
         let (responder, rx) = oneshot::channel();
         (
             Self::Status {
@@ -227,11 +235,11 @@ impl Forwarder {
         )
     }
 
-    async fn run(mut self) -> anyhow::Result<()> {
+    async fn run(mut self) {
         loop {
             let timeout = if self.tasks.is_empty() {
                 tracing::info!("timeout for {} started", self.room_id);
-                tokio::time::sleep(Duration::from_secs(5)).boxed()
+                tokio::time::sleep(Channel::CHANNEL_IDLE_TIMEOUT).boxed()
             } else {
                 std::future::pending().boxed()
             };
@@ -246,13 +254,13 @@ impl Forwarder {
                     }
                 }
                 _ = timeout => {
+                    tracing::info!("timeout for {} reached", self.room_id);
                     break
                 }
             }
         }
         let _ = self.end_notify.send(self.room_id).await;
         tracing::info!("end notify sent");
-        return Ok(());
     }
 
     async fn event(&mut self) -> anyhow::Result<bool> {
@@ -269,11 +277,13 @@ impl Forwarder {
                     None => return Ok(false),
                 }
             }
-            Some((_, client_id)) = self.tasks.next() => {
-                if let Some(src_id) = self.client_id_to_src_id.remove(&client_id) {
+            Some((src_id, client_id)) = self.tasks.next() => {
+                if let std::collections::btree_map::Entry::Occupied(o) = self.client_id_to_src_id.entry(client_id) {
+                    if *o.get() == src_id {
+                        o.remove();
+                    }
                     self.connections.remove(&src_id);
                 }
-
             }
         }
         Ok(true)
@@ -281,32 +291,25 @@ impl Forwarder {
 
     async fn control_msg(&mut self, ctl: ChannelCtl) -> anyhow::Result<()> {
         match ctl {
-            // FIXME: multiple clients with same client_id lead to problems between open connection and establish
             ChannelCtl::OpenConnection {
                 client_id,
                 user_name,
                 responder,
             } => {
-                let resp = match self.client_id_to_src_id.get(&client_id) {
-                    Some(src_id) => *src_id,
-                    None => {
-                        let (msg_tx, msg_rx) = mpsc::channel(10);
-                        let (control, task) = VoiceConnection::start(
-                            client_id,
-                            user_name,
-                            msg_rx,
-                            self.voice_tx.clone(),
-                            self.socket.clone(),
-                        );
-                        self.tasks.push(task);
-                        let src_id = control.source_id();
-                        let conn = Conn::new(msg_tx, control);
-                        self.connections.insert(src_id, conn);
-                        self.client_id_to_src_id.insert(client_id, src_id);
-                        src_id
-                    }
-                };
-                let _ = responder.send(resp);
+                let (msg_tx, msg_rx) = mpsc::channel(10);
+                let (control, task) = VoiceConnection::start(
+                    client_id,
+                    user_name,
+                    msg_rx,
+                    self.voice_tx.clone(),
+                    self.socket.clone(),
+                );
+                self.tasks.push(task);
+                let src_id = control.source_id();
+                let conn = Conn::new(msg_tx, control);
+                self.connections.insert(src_id, conn);
+                self.client_id_to_src_id.insert(client_id, src_id);
+                let _ = responder.send(src_id);
                 Ok(())
             }
             ChannelCtl::Establish {
@@ -314,14 +317,15 @@ impl Forwarder {
                 client_addr,
                 responder,
             } => {
-                let src_id = match self.client_id_to_src_id.get(&client_id) {
-                    Some(src_id) => *src_id,
-                    None => todo!(),
+                let resp = match self.client_id_to_src_id(client_id) {
+                    Ok(src_id) => {
+                        let conn = self.connections.get_mut(&src_id).expect("always present");
+                        conn.bind(client_addr);
+                        Ok(conn.ctl.init(client_addr).await?)
+                    }
+                    Err(e) => Err(e.into()),
                 };
-                let conn = self.connections.get_mut(&src_id).expect("always present");
-                conn.bind(client_addr);
-                let init = conn.ctl.init(client_addr).await?;
-                let _ = responder.send(init);
+                let _ = responder.send(resp);
                 Ok(())
             }
             ChannelCtl::Peers { responder } => {
@@ -338,7 +342,11 @@ impl Forwarder {
                             ..
                         })
                     ) {
-                        peers.push((*id, conn.ctl.source_id(), conn.ctl.user_name().into()));
+                        peers.push(Peer {
+                            id: *id,
+                            source_id: conn.ctl.source_id(),
+                            name: conn.ctl.user_name().into(),
+                        });
                     }
                 }
                 let _ = responder.send(peers);
@@ -348,9 +356,13 @@ impl Forwarder {
                 client_id,
                 responder,
             } => {
-                let sid = self.client_id_to_src_id.get(&client_id).expect("FIXME");
-                let conn = &self.connections[sid];
-                conn.ctl.stop().await;
+                if let Some(conn) = self
+                    .client_id_to_src_id
+                    .get(&client_id)
+                    .and_then(|sid| self.connections.get(sid))
+                {
+                    conn.ctl.stop().await;
+                }
                 let _ = responder.send(());
                 Ok(())
             }
@@ -358,10 +370,19 @@ impl Forwarder {
                 client_id,
                 responder,
             } => {
-                let sid = self.client_id_to_src_id.get(&client_id).expect("FIXME");
-                let conn = &self.connections[sid];
-                let status = conn.ctl.status().await?;
-                let _ = responder.send(status);
+                let resp = match self.client_id_to_src_id(client_id) {
+                    Ok(sid) => {
+                        let conn = &self.connections[&sid];
+                        Ok(conn.ctl.status().await.unwrap_or_else(|e| {
+                            tracing::info!("status request failed: {}", e);
+                            StatusResponse {
+                                state: ConnectionState::Stopped,
+                            }
+                        }))
+                    }
+                    Err(e) => Err(e.into()),
+                };
+                let _ = responder.send(resp);
                 Ok(())
             }
         }
@@ -373,7 +394,6 @@ impl Forwarder {
                 payload: Some(client_message::Payload::IpDisco(disco)),
             } => {
                 self.ip_disco(addr, disco).await;
-                return;
             }
             ClientMessage {
                 payload: Some(client_message::Payload::Voice(voice)),
@@ -412,6 +432,13 @@ impl Forwarder {
         }
     }
 
+    fn client_id_to_src_id(&self, client_id: Uuid) -> Result<u32, PeerNotFound> {
+        self.client_id_to_src_id
+            .get(&client_id)
+            .copied()
+            .ok_or(PeerNotFound)
+    }
+
     async fn forward(
         &mut self,
         addr: SocketAddr,
@@ -421,7 +448,7 @@ impl Forwarder {
         let conn = self
             .connections
             .get(&source_id)
-            .ok_or_else(|| UnexpectedSource(source_id))?;
+            .ok_or(UnexpectedSource(source_id))?;
         conn.forward(addr, msg).await
     }
 }
@@ -469,7 +496,7 @@ impl Conn {
 
     async fn forward(&self, from: SocketAddr, msg: InternalMsg) -> Result<(), ForwardError> {
         if let Some(addr) = self.addr {
-            if addr != from {
+            if !Self::same_addr(addr, from) {
                 return Err(ForwardError::BadAddr(addr, from));
             }
         } else {
@@ -479,6 +506,17 @@ impl Conn {
             tracing::warn!("connection task stopped receiving");
             ForwardError::Stopped
         })
+    }
+
+    fn same_addr(l: SocketAddr, r: SocketAddr) -> bool {
+        l.port() == r.port() && {
+            match (l.ip(), r.ip()) {
+                (l @ std::net::IpAddr::V4(_), r @ std::net::IpAddr::V4(_)) => l == r,
+                (std::net::IpAddr::V4(l), r @ std::net::IpAddr::V6(_)) => l.to_ipv6_mapped() == r,
+                (l @ std::net::IpAddr::V6(_), std::net::IpAddr::V4(r)) => l == r.to_ipv6_mapped(),
+                (l @ std::net::IpAddr::V6(_), r @ std::net::IpAddr::V6(_)) => l == r,
+            }
+        }
     }
 }
 

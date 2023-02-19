@@ -10,7 +10,8 @@ pub mod models;
 pub mod schema;
 
 pub mod grpc;
-#[cfg(test)]
+pub mod server;
+#[cfg(any(test, feature = "test"))]
 pub mod test_helper;
 
 #[derive(Debug, Parser)]
@@ -50,4 +51,5 @@ impl ChannelsConfig {
     }
 }
 
-const MIGRATIONS: diesel_migrations::EmbeddedMigrations = diesel_migrations::embed_migrations!();
+const MIGRATIONS: diesel_migrations::EmbeddedMigrations =
+    diesel_migrations::embed_migrations!("./migrations");

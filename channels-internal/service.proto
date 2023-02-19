@@ -82,6 +82,9 @@ message AssignChannelRequest {
 
 message AssignChannelResponse { string voice_server_host = 1; }
 
-message UnassignChannelRequest { string channel_id = 1; }
+message UnassignChannelRequest {
+  string channel_id = 1;
+  string server_id = 2;
+}
 
 message UnassignChannelResponse {}

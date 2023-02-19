@@ -1,5 +1,8 @@
+use std::net::{Ipv6Addr, SocketAddr};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+
+use tokio::net::UdpSocket;
 
 #[derive(Clone, Debug)]
 pub struct Ports {
@@ -8,11 +11,15 @@ pub struct Ports {
 }
 
 impl Ports {
-    pub fn new(start: u16, limit: u16) -> Self {
+    pub async fn new(mut start: u16, limit: u16) -> std::io::Result<Self> {
+        if start == 0 {
+            let addr = UdpSocket::bind(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0))).await?;
+            start = addr.local_addr()?.port();
+        }
         let state = (0..limit)
             .map(|_| Arc::new(AtomicBool::new(true)))
             .collect();
-        Self { start, state }
+        Ok(Self { start, state })
     }
 
     pub fn get(&self) -> Option<PortRef> {
@@ -26,6 +33,14 @@ impl Ports {
             }
         }
         None
+    }
+
+    pub fn start(&self) -> u16 {
+        self.start
+    }
+
+    pub fn total(&self) -> u16 {
+        self.state.len() as u16
     }
 }
 
@@ -46,11 +61,12 @@ impl Drop for PortRef {
 mod test {
     use super::Ports;
 
-    #[test]
-    fn test_ports() {
-        let ports = Ports::new(0, 2);
+    #[tokio::test]
+    async fn test_ports() {
+        let ports = Ports::new(0, 2).await.unwrap();
+        let start = ports.start;
         let port = ports.get().unwrap();
-        assert_eq!(port.port, 0);
+        assert_eq!(port.port, start);
         let state1 = port.taken.clone();
         assert!(!state1.load(std::sync::atomic::Ordering::SeqCst));
         assert!(!ports.state[0].load(std::sync::atomic::Ordering::SeqCst));

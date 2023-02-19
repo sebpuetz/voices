@@ -45,12 +45,14 @@ impl ChannelRegistry for LocalChannelRegistry {
         let request = voices_channels::grpc::proto::GetChannelRequest {
             channel_id: channel_id.to_string(),
         };
+        // ensure channel exists
         self.channels
             .get_channel(tonic::Request::new(request))
             .await?;
         let request = voice_server::grpc::proto::AssignChannelRequest {
             channel_id: channel_id.to_string(),
         };
+        // assign channel to the local voice server
         self.voice
             .assign_channel(tonic::Request::new(request))
             .await?;
