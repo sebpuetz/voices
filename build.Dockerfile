@@ -13,7 +13,7 @@ RUN curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v21.1
     && unzip -o $PROTOC_ZIP -d /usr/local 'include/*' \ 
     && rm -f $PROTOC_ZIP
 RUN apt-get update -y \
-    && apt-get install -y --no-install-recommends openssl ca-certificates libpq-dev libasound-dev cmake
+    && apt-get install -y --no-install-recommends openssl ca-certificates libpq-dev cmake
 COPY --from=planner /app/recipe.json recipe.json
 # Build our project dependencies, not our application!
 RUN cargo chef cook --release --recipe-path recipe.json
@@ -27,4 +27,4 @@ COPY --from=cacher /usr/local/bin/protoc /usr/local/bin/protoc
 COPY --from=cacher /usr/local/include /usr/local/include
 COPY . .
 # Build our application, leveraging the cached deps!
-RUN cargo build --release --workspace --exclude=voices-client
+RUN cargo build --release --workspace
