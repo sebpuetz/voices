@@ -240,15 +240,15 @@ where
         };
         let status_request = tonic::Request::new(req);
         let present = match channel.voice().status(status_request).await {
-            Ok(o) => o
-                .into_inner()
-                .info
+            Ok(o) => dbg!(o.into_inner().info)
                 .into_iter()
                 .filter_map(|v| {
-                    (v.client_id.parse::<Uuid>().ok()? != client_id).then_some(Present {
-                        user: v.name,
-                        source_id: v.src_id,
-                    })
+                    dbg!(
+                        (v.client_id.parse::<Uuid>().ok()? != client_id).then_some(Present {
+                            user: v.name,
+                            source_id: v.src_id,
+                        })
+                    )
                 })
                 .collect(),
             Err(e) => {

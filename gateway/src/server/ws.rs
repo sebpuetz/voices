@@ -8,8 +8,8 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use uuid::Uuid;
 use voices_ws_proto::{
-    ClientEvent, Disconnected, Init, JoinError, Left, MessageExt, Present, Ready, ServerAnnounce,
-    ServerEvent, ClientAnnounce,
+    ClientAnnounce, ClientEvent, Disconnected, Init, JoinError, Left, MessageExt, Present, Ready,
+    ServerAnnounce, ServerEvent,
 };
 
 use crate::util::TimeoutExt;

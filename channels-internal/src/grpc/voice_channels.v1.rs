@@ -130,6 +130,8 @@ pub struct AssignChannelResponse {
 pub struct UnassignChannelRequest {
     #[prost(string, tag = "1")]
     pub channel_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub server_id: ::prost::alloc::string::String,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

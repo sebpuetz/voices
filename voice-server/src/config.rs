@@ -1,24 +1,26 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use anyhow::Context;
-use voices_channels::grpc::proto::channels_server::Channels;
-
+use crate::registry::Register;
 use crate::{Ports, VoiceServerImpl};
+use anyhow::Context;
 
 #[derive(clap::Parser, Debug)]
 pub struct VoiceServerConfig {
     #[clap(long, default_value_t = 33333, env)]
-    first_udp_port: u16,
+    pub first_udp_port: u16,
     #[clap(long, default_value_t = 2, env)]
-    udp_ports: u16,
+    pub udp_ports: u16,
     #[clap(long, default_value = "localhost", env)]
-    udp_host: String,
+    pub udp_host: String,
 }
 
 impl VoiceServerConfig {
-    pub fn udp_ports(&self) -> Ports {
-        Ports::new(self.first_udp_port, self.udp_ports)
+    pub async fn udp_ports(&self) -> anyhow::Result<Ports> {
+        let start = self.first_udp_port;
+        let limit = self.udp_ports;
+        let ports = Ports::new(start, limit).await?;
+        Ok(ports)
     }
 
     pub async fn udp_host(&self) -> anyhow::Result<IpAddr> {
@@ -30,9 +32,18 @@ impl VoiceServerConfig {
             .ip())
     }
 
-    pub async fn server(&self, channels: Arc<dyn Channels>) -> anyhow::Result<VoiceServerImpl> {
+    pub async fn server(&self) -> anyhow::Result<VoiceServerImpl> {
         let ip = self.udp_host().await?;
-        let ports = self.udp_ports();
-        Ok(VoiceServerImpl::new(ip, ports, channels))
+        let ports = self.udp_ports().await?;
+        Ok(VoiceServerImpl::new(ip, ports, None))
+    }
+
+    pub async fn server_with_registry(
+        &self,
+        registry: Arc<dyn Register>,
+    ) -> anyhow::Result<VoiceServerImpl> {
+        let ip = self.udp_host().await?;
+        let ports = self.udp_ports().await?;
+        Ok(VoiceServerImpl::new(ip, ports, Some(registry)))
     }
 }

@@ -15,14 +15,16 @@ pub struct PoolGuard {
 }
 
 impl PoolGuard {
+    pub async fn setup_default(base_db_url: String) -> anyhow::Result<PoolGuard> {
+        Self::setup(crate::MIGRATIONS, base_db_url).await
+    }
+
     pub async fn setup(
         migrations: impl MigrationSource<Pg> + Send + Sync + 'static,
+        base_db_url: String,
     ) -> anyhow::Result<PoolGuard> {
-        dotenvy::dotenv()?;
         let id = Uuid::new_v4();
-        let base_database_url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://postgres:password@localhost:5432".into());
-        let mut url = Url::try_from(base_database_url.as_str()).unwrap();
+        let mut url = Url::try_from(base_db_url.as_str()).unwrap();
         url.set_path("");
         let base_database_url = url.to_string();
         let base_database_url_ = base_database_url.clone();
@@ -49,6 +51,10 @@ impl PoolGuard {
             database_url: base_database_url,
             id,
         })
+    }
+
+    pub fn full_database_url(&self) -> String {
+        format!("{}/{}", self.database_url, self.id)
     }
 }
 

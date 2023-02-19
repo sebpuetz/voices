@@ -81,13 +81,13 @@ fn deinterleave(input: &[f32], output: &mut [Vec<f32>]) {
 
 fn scale_up(v: &mut [f32]) {
     v.iter_mut().for_each(|v| {
-        *v = *v * 32767.0;
+        *v *= 32767.0;
     })
 }
 
 fn scale_down(v: &mut [f32]) {
     v.iter_mut().for_each(|v| {
-        *v = *v / 32767.0;
+        *v /= 32767.0;
     })
 }
 

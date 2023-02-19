@@ -233,7 +233,12 @@ mod test {
 
     #[tokio::test]
     async fn test() {
-        let conn = PoolGuard::setup(MIGRATIONS).await.unwrap();
+        dotenvy::dotenv().unwrap();
+        let base_database_url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://postgres:password@localhost:5432".into());
+        let conn = PoolGuard::setup(MIGRATIONS, base_database_url)
+            .await
+            .unwrap();
         let server = NewServer::new("test".into());
         let server_id = server.create(&conn).await.unwrap();
         let channel = NewChannel::new(server_id, "test".into());

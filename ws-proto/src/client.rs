@@ -9,7 +9,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::{timeout, Instant};
 use tokio_tungstenite::WebSocketStream;
 use uuid::Uuid;
-use voices_ws_proto::*;
+
+use crate::*;
 
 pub struct ControlStream {
     inc: mpsc::Receiver<ServerEvent>,
