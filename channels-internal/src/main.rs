@@ -1,13 +1,10 @@
 use std::net::SocketAddr;
 
 use clap::Parser;
-use tokio::signal::ctrl_c;
-use tower::ServiceBuilder;
-use tower_http::classify::{GrpcCode, GrpcErrorsAsFailures, SharedClassifier};
-use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 use tracing::subscriber::set_global_default;
 use tracing_log::LogTracer;
 use tracing_subscriber::layer::SubscriberExt;
+use voices_channels::server::server;
 use voices_channels::ChannelsConfig;
 
 #[derive(Debug, Parser)]
@@ -31,26 +28,7 @@ async fn main() -> anyhow::Result<()> {
     )?;
     LogTracer::init()?;
     let cfg = Config::parse();
-    let service = cfg.channels.server().await?.grpc();
-
-    let classifier = GrpcErrorsAsFailures::new()
-        .with_success(GrpcCode::InvalidArgument)
-        .with_success(GrpcCode::NotFound);
-    let layers = ServiceBuilder::new()
-        .layer(
-            TraceLayer::new(SharedClassifier::new(classifier))
-                .make_span_with(DefaultMakeSpan::new().include_headers(true)),
-        )
-        .into_inner();
-    tracing::info!("Running channels on {:#?}", cfg);
-    tonic::transport::Server::builder()
-        .layer(layers)
-        .add_service(service)
-        .serve_with_shutdown(SocketAddr::from(([0, 0, 0, 0], cfg.listen_port)), async {
-            tracing::debug!("waiting for shutdown signal");
-            let _ = ctrl_c().await;
-            tracing::info!("received shutdown signal");
-        })
-        .await?;
-    Ok(())
+    let addr = SocketAddr::from(([0, 0, 0, 0], cfg.listen_port));
+    let srv = server(addr, cfg.channels).await?;
+    srv.wait().await
 }

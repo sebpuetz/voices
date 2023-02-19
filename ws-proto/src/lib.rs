@@ -1,3 +1,6 @@
+#[cfg(feature = "client")]
+pub mod client;
+
 use std::net::IpAddr;
 use std::time::{Duration, SystemTime};
 
@@ -27,7 +30,6 @@ pub struct ServerAnnounce {
     pub port: u16,
     pub source_id: u32,
 }
-
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ClientAnnounce {

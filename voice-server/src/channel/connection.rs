@@ -1,9 +1,10 @@
 use std::net::SocketAddr;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use rand::thread_rng;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use tracing::Instrument;
 use udp_proto::UdpWithBuf;
 use uuid::Uuid;
@@ -12,6 +13,9 @@ use xsalsa20poly1305::{Key, KeyInit, XSalsa20Poly1305};
 
 use super::InternalMsg;
 
+/// Control struct for the voice session of a given client
+///
+/// Sends messages over a channel to a background task handling the client
 #[derive(Clone, Debug)]
 pub struct VoiceControl {
     source_id: u32,
@@ -20,6 +24,7 @@ pub struct VoiceControl {
 }
 
 impl VoiceControl {
+    /// Initialize voice connection for client with the given address.
     pub async fn init(&self, client_addr: SocketAddr) -> anyhow::Result<InitResponse> {
         let (responder, rx) = tokio::sync::oneshot::channel();
         self.tx
@@ -138,6 +143,7 @@ impl StatusResponse {
 pub enum ConnectionState {
     Waiting,
     Peered,
+    Stopped,
 }
 
 pub struct VoiceTask {
@@ -150,6 +156,7 @@ impl std::fmt::Debug for VoiceTask {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VoiceTask")
             .field("client_id", &self.client_id)
+            .field("src_id", &self.src_id)
             .finish()
     }
 }
@@ -198,6 +205,17 @@ pub struct VoiceConnection {
 }
 
 impl VoiceConnection {
+    pub const IDLE_TIMEOUT: Duration = Duration::from_secs(15);
+    /// Start the voice connection.
+    ///
+    /// Connection starts in a waiting state where it awaits the client's UDP address.
+    /// If the address doesn't arrive before the timeout, the connection stops itself.
+    ///
+    /// After receiving the client's UDP address, the connection transitions into the
+    /// peered state where it en-/decrypts voice messages, reacts to controls and pings.
+    ///
+    /// The returned [`VoiceTask`] future returns when the connection has stopped.
+    /// [`VoiceControl`] allows introspection and control of the connection.
     pub(super) fn start(
         client_id: Uuid,
         user_name: String,
@@ -230,7 +248,7 @@ impl VoiceConnection {
     #[tracing::instrument(name="voice_run", skip(self), fields(client_id=%self.client_id, source_id=%self.source_id))]
     pub async fn run(mut self) {
         tracing::info!("starting voice task");
-        let mut init_timeout = Box::pin(tokio::time::sleep(Duration::from_secs(15)));
+        let mut init_timeout = Box::pin(tokio::time::sleep(Self::IDLE_TIMEOUT));
         loop {
             tokio::select! {
                 addr = self.control_chan.recv() => {
@@ -275,7 +293,8 @@ impl VoiceConnection {
         let source_id = self.source_id;
         let mut seq = 0;
         let mut sent = 0;
-        let mut ping_deadline = Instant::now() + Duration::from_secs(15);
+
+        let mut ping_deadline = Instant::now() + Self::IDLE_TIMEOUT;
         let mut received = 0;
         let mut voice_rx = self.voice_tx.subscribe();
         loop {
@@ -301,7 +320,9 @@ impl VoiceConnection {
                                 let pong = voice_proto::ServerMessage::pong(voice_proto::Pong { seq: ping.seq, sent, received });
                                 self.udp.send_to(&pong, addr).await?;
                             },
-                            None => todo!(),
+                            None => {
+                                anyhow::bail!("forwarder dropped before connections closed");
+                            },
                         }
                     },
                     recv = voice_rx.recv() => {
@@ -314,7 +335,7 @@ impl VoiceConnection {
                                 }
                                 cipher.encrypt(&mut voice.payload, voice.sequence, voice.stream_time)?;
                                 let voice = voice_proto::ServerMessage::voice(voice);
-                                self.udp.send(&voice).await?;
+                                self.udp.send_to(&voice, addr).await?;
                                 sent += 1;
                             },
                             Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -326,7 +347,7 @@ impl VoiceConnection {
                             },
                         }
                     }
-                    _ = tokio::time::sleep_until(ping_deadline.into()) => {
+                    _ = tokio::time::sleep_until(ping_deadline) => {
                         tracing::warn!("keep alive elapsed");
                         return Ok(())
                     },
