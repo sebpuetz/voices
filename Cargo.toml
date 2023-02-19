@@ -1,6 +1,5 @@
 [workspace]
 members = [
-  "./client",
   "./channels-internal",
   "./gateway",
   "./ws-proto",
@@ -8,4 +7,8 @@ members = [
   "./voice-proto",
   "./voice-server",
   "./voices-crypto",
+]
+
+exclude = [
+  "./client"
 ]
