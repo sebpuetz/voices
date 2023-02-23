@@ -13,6 +13,8 @@ pub mod grpc;
 pub mod server;
 #[cfg(any(test, feature = "test"))]
 pub mod test_helper;
+#[cfg(test)]
+mod test;
 
 #[derive(Debug, Parser)]
 pub struct ChannelsConfig {

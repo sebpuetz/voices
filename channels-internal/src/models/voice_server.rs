@@ -18,14 +18,14 @@ impl NewVoiceServer {
         Self { id, host_url }
     }
 
-    pub async fn create_or_update(&self, conn: &Pool) -> Result<Uuid, DbError> {
+    pub async fn create_or_update(&self, conn: &Pool) -> Result<(Uuid, DateTime<Utc>), DbError> {
         let conn = conn.get().await?;
         let slf = self.clone();
         let res = conn.interact(move |conn| slf.do_create(conn)).await??;
         Ok(res)
     }
 
-    fn do_create(&self, conn: &mut PgConnection) -> Result<Uuid, DbError> {
+    fn do_create(&self, conn: &mut PgConnection) -> Result<(Uuid, DateTime<Utc>), DbError> {
         use crate::schema::voice_servers::dsl::*;
 
         let res = diesel::insert_into(voice_servers)
@@ -33,7 +33,7 @@ impl NewVoiceServer {
             .on_conflict(id)
             .do_update()
             .set(last_seen.eq(Utc::now()))
-            .returning(id)
+            .returning((id, last_seen))
             .get_result(conn)?;
 
         Ok(res)
@@ -49,42 +49,59 @@ pub struct VoiceServer {
 }
 
 impl VoiceServer {
-    pub async fn cleanup_stale(conn: &Pool) -> Result<Vec<Uuid>, DbError> {
+    pub async fn cleanup_stale(
+        threshold: chrono::Duration,
+        conn: &Pool,
+    ) -> Result<Vec<Uuid>, DbError> {
         let conn = conn.get().await?;
-        let res = conn.interact(Self::do_cleanup_stale).await??;
+        let res = conn
+            .interact(move |con| Self::do_cleanup_stale(threshold, con))
+            .await??;
         Ok(res)
     }
 
-    fn do_cleanup_stale(conn: &mut PgConnection) -> Result<Vec<Uuid>, DbError> {
+    fn do_cleanup_stale(
+        threshold: chrono::Duration,
+        conn: &mut PgConnection,
+    ) -> Result<Vec<Uuid>, DbError> {
         use crate::schema::voice_servers::dsl::*;
 
-        diesel::delete(
-            voice_servers.filter(last_seen.lt(Utc::now() - chrono::Duration::seconds(35))),
-        )
-        .returning(id)
-        .get_results(conn)
-        .map_err(Into::into)
+        diesel::delete(voice_servers.filter(last_seen.lt(Utc::now() - threshold)))
+            .returning(id)
+            .get_results(conn)
+            .map_err(Into::into)
     }
 
-    pub async fn get_active(id: Uuid, conn: &Pool) -> Result<Option<Self>, DbError> {
+    pub async fn get_active(
+        id: Uuid,
+        threshold: chrono::Duration,
+        conn: &Pool,
+    ) -> Result<Option<Self>, DbError> {
         let conn = conn.get().await?;
         let res = conn.interact(move |conn| Self::do_get(conn, id)).await??;
-        Ok(res.filter(|v| v.last_seen > Utc::now() - chrono::Duration::seconds(35)))
+        Ok(res.filter(|v| v.last_seen > Utc::now() - threshold))
     }
 
-    pub async fn get_smallest_load(conn: &Pool) -> Result<Option<(Self, i64)>, DbError> {
+    pub async fn get_smallest_load(
+        threshold: chrono::Duration,
+        conn: &Pool,
+    ) -> Result<Option<(Self, i64)>, DbError> {
         let conn = conn.get().await?;
-        conn.interact(Self::do_get_smallest_load).await?
+        conn.interact(move |con| Self::do_get_smallest_load(threshold, con))
+            .await?
     }
 
-    pub fn do_get_smallest_load(conn: &mut PgConnection) -> Result<Option<(Self, i64)>, DbError> {
+    pub fn do_get_smallest_load(
+        threshold: chrono::Duration,
+        conn: &mut PgConnection,
+    ) -> Result<Option<(Self, i64)>, DbError> {
         use crate::schema::*;
         use diesel::dsl::count;
         let res = voice_servers::table
             .left_join(channels::table)
             .group_by(voice_servers::id)
             .select((Self::as_select(), count(channels::id.nullable())))
-            .filter(voice_servers::last_seen.gt(Utc::now() - chrono::Duration::seconds(35)))
+            .filter(voice_servers::last_seen.gt(Utc::now() - threshold))
             .order_by(count(channels::id).asc())
             .limit(1)
             .get_result::<(Self, i64)>(conn)

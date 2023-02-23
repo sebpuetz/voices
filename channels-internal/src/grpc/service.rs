@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use chrono::SubsecRound;
 use deadpool::Runtime;
 use deadpool_diesel::postgres::{Manager, Pool};
 use proto::channels_server::*;
@@ -15,21 +16,60 @@ use super::proto;
 #[derive(Clone)]
 pub struct ChannelsImpl {
     db: Pool,
+    config: Config,
+}
+
+#[derive(Clone)]
+pub struct Config {
+    voice_server_staleness_duration: chrono::Duration,
+}
+
+impl Config {
+    pub fn voice_server_staleness_duration(&self) -> chrono::Duration {
+        self.voice_server_staleness_duration
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            voice_server_staleness_duration: chrono::Duration::seconds(35),
+        }
+    }
 }
 
 impl ChannelsImpl {
     pub async fn new_from_pg_str(conn: String) -> anyhow::Result<Self> {
         let manager = Manager::new(conn, Runtime::Tokio1);
         let db = Pool::builder(manager).build()?;
-        Ok(Self { db })
+        Ok(Self {
+            db,
+            config: Default::default(),
+        })
     }
 
     pub fn new(db: Pool) -> Self {
-        Self { db }
+        Self {
+            db,
+            config: Default::default(),
+        }
+    }
+
+    pub fn with_config(mut self, config: Config) -> Self {
+        self.config = config;
+        self
     }
 
     pub fn grpc(self) -> ChannelsServer<Self> {
         ChannelsServer::new(self)
+    }
+
+    pub fn db(&self) -> &Pool {
+        &self.db
+    }
+
+    pub fn config(&self) -> &Config {
+        &self.config
     }
 }
 
@@ -39,7 +79,9 @@ impl Channels for ChannelsImpl {
         &self,
         _: tonic::Request<proto::CleanupStaleVoiceServersRequest>,
     ) -> Result<tonic::Response<proto::CleanupStaleVoiceServersResponse>, tonic::Status> {
-        let deleted = VoiceServer::cleanup_stale(&self.db).await?;
+        let deleted =
+            VoiceServer::cleanup_stale(self.config.voice_server_staleness_duration, &self.db)
+                .await?;
         Ok(tonic::Response::new(
             proto::CleanupStaleVoiceServersResponse {
                 deleted: deleted.iter().map(ToString::to_string).collect(),
@@ -54,10 +96,19 @@ impl Channels for ChannelsImpl {
     ) -> Result<tonic::Response<proto::RegisterVoiceServerResponse>, tonic::Status> {
         let req = request.into_inner();
         let id = parse(&req.id, "voice_server_id")?;
-        NewVoiceServer::new(id, req.addr)
+        let (_, refreshed_at) = NewVoiceServer::new(id, req.addr)
             .create_or_update(&self.db)
             .await?;
-        Ok(tonic::Response::new(proto::RegisterVoiceServerResponse {}))
+        let valid_until = refreshed_at + self.config.voice_server_staleness_duration;
+        let seconds = valid_until.trunc_subsecs(0).timestamp();
+        let nanos = valid_until.timestamp_subsec_nanos();
+        let valid_until = prost_types::Timestamp {
+            nanos: nanos as _,
+            seconds,
+        };
+        Ok(tonic::Response::new(proto::RegisterVoiceServerResponse {
+            valid_until: Some(valid_until),
+        }))
     }
 
     async fn get_servers(
@@ -141,9 +192,11 @@ impl Channels for ChannelsImpl {
             .await?
             .ok_or_else(|| tonic::Status::not_found("channel not found"))?;
         let v = match c.assigned_to {
-            Some(id) => VoiceServer::get_active(id, &self.db)
-                .await?
-                .map(|v| v.host_url),
+            Some(id) => {
+                VoiceServer::get_active(id, self.config.voice_server_staleness_duration, &self.db)
+                    .await?
+                    .map(|v| v.host_url)
+            }
             None => {
                 tracing::info!("channel currently unassigned");
                 None
@@ -163,12 +216,13 @@ impl Channels for ChannelsImpl {
     ) -> Result<tonic::Response<proto::AssignChannelResponse>, tonic::Status> {
         let req = request.into_inner();
         let id = parse(&req.channel_id, "channel_id")?;
-        let (srv, load) = VoiceServer::get_smallest_load(&self.db)
-            .await?
-            .ok_or_else(|| {
-                tracing::warn!("no voice servers registered");
-                tonic::Status::internal("no voice servers registered")
-            })?;
+        let (srv, load) =
+            VoiceServer::get_smallest_load(self.config.voice_server_staleness_duration, &self.db)
+                .await?
+                .ok_or_else(|| {
+                    tracing::warn!("no voice servers registered");
+                    tonic::Status::internal("no voice servers registered")
+                })?;
         tracing::info!(
             "assigned channel to voice server {:?} with load={}",
             srv,
