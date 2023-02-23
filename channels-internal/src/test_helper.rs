@@ -4,6 +4,7 @@ use diesel::migration::MigrationSource;
 use diesel::pg::Pg;
 use diesel::{Connection, PgConnection, RunQueryDsl};
 use diesel_migrations::MigrationHarness;
+use tokio::sync::OnceCell;
 use url::Url;
 use uuid::Uuid;
 
@@ -84,4 +85,31 @@ impl Drop for PoolGuard {
                 .expect("failed to create test db");
         });
     }
+}
+
+static SHARED_TEST_DB: OnceCell<PoolGuard> = OnceCell::const_new();
+
+pub async fn get_shared_test_db() -> Pool {
+    SHARED_TEST_DB
+        .get_or_init(|| {
+            let _ = dotenvy::dotenv();
+            let base_db_url = std::env::var("DATABASE_URL")
+                .unwrap_or_else(|_| "postgres://postgres:password@localhost:5432".into());
+            async move { PoolGuard::setup_default(base_db_url).await.unwrap() }
+        })
+        .await
+        .pool
+        .clone()
+}
+
+pub async fn get_shared_test_db_url() -> String {
+    SHARED_TEST_DB
+        .get_or_init(|| {
+            let _ = dotenvy::dotenv();
+            let base_db_url = std::env::var("DATABASE_URL")
+                .unwrap_or_else(|_| "postgres://postgres:password@localhost:5432".into());
+            async move { PoolGuard::setup_default(base_db_url).await.unwrap() }
+        })
+        .await
+        .full_database_url()
 }
