@@ -48,3 +48,7 @@ standalone = []
 
 [dev-dependencies]
 dotenvy = "0.15.6"
+
+[build-dependencies]
+anyhow = "1.0.58"
+tonic-build = "0.8"

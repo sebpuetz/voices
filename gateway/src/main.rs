@@ -1,4 +1,4 @@
-pub mod rest_api;
+// pub mod rest_api;
 pub mod server;
 mod util;
 
@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use axum::extract::ws::WebSocket;
 use axum::http::{HeaderValue, Method};
 use clap::{CommandFactory, FromArgMatches, Parser};
-use rest_api::{new_channel, servers};
+// use rest_api::{new_channel, servers};
 use server::channel_registry::ChannelRegistry;
 use server::channel_state::{ChannelState, LocalChannelEvents, RedisChannelEvents};
 use server::session::ServerSession;
@@ -118,15 +118,15 @@ where
     use tower_http::cors::CorsLayer;
     let router = axum::Router::new()
         .route("/ws", axum::routing::get(websocket_handler))
-        .route("/channels", axum::routing::post(new_channel))
-        .route("/channels/:id", axum::routing::get(rest_api::get_channel))
-        .route("/servers", axum::routing::get(servers))
-        .route("/servers/:id", axum::routing::get(rest_api::get_server))
-        .route("/servers", axum::routing::post(rest_api::new_server))
-        .route(
-            "/voice_servers/cleanup",
-            axum::routing::post(rest_api::cleanup_stale_voice_servers),
-        )
+        // .route("/channels", axum::routing::post(new_channel))
+        // .route("/channels/:id", axum::routing::get(rest_api::get_channel))
+        // .route("/servers", axum::routing::get(servers))
+        // .route("/servers/:id", axum::routing::get(rest_api::get_server))
+        // .route("/servers", axum::routing::post(rest_api::new_server))
+        // .route(
+        //     "/voice_servers/cleanup",
+        //     axum::routing::post(rest_api::cleanup_stale_voice_servers),
+        // )
         .layer(
             CorsLayer::new()
                 .allow_origin("*".parse::<HeaderValue>().unwrap())

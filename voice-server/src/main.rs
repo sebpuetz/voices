@@ -5,6 +5,7 @@ use tracing::subscriber::set_global_default;
 use tracing_log::LogTracer;
 use tracing_subscriber::prelude::*;
 use uuid::Uuid;
+use voice_server::registry::voice_channels::channels_client::ChannelsClient;
 use voice_server::registry::Registry;
 use voice_server::server::{self, Config};
 
@@ -24,9 +25,9 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(endpoint=%endpoint, "setting up remote channel registry client");
 
     let ch = tonic::transport::Endpoint::from(endpoint).connect_lazy();
-    let client = voices_channels::grpc::proto::channels_client::ChannelsClient::new(ch);
+    let client = ChannelsClient::new(ch);
     let server_id = config.server_id.unwrap_or_else(Uuid::new_v4);
-    let registry = Registry::new(Arc::new(client), server_id);
+    let registry = Registry::new(client, server_id);
     let srv = server::serve(
         Arc::new(registry),
         config.listen_addr(),
