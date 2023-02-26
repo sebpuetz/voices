@@ -1,3 +1,6 @@
+#[path = "./voice_channels.v1.rs"]
+pub mod voice_channels_proto;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

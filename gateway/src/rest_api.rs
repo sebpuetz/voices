@@ -4,7 +4,6 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use voices_channels::grpc::proto::channels_server::Channels;
 
 use crate::server::channel_registry::ChannelRegistry;
 use crate::server::channel_state::ChannelState;

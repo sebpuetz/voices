@@ -66,7 +66,7 @@ async fn test_chan_drop() {
         .once()
         .return_once(move |_| Box::pin(async move { Ok(()) }));
     let registry = CloneableMockRegister::new(registry);
-    let srv = create_srv(Some(registry.clone())).await.unwrap();
+    let srv = create_standalone_srv(registry.clone()).await.unwrap();
     let id = Uuid::new_v4();
     srv.assign_channel_impl(id).await.unwrap();
     assert_matches!(srv.get_channel(id).await, Some(_));
@@ -81,7 +81,7 @@ async fn test_chan_drop() {
 
 #[tokio::test]
 async fn test_chan_ports_exhausted() {
-    let srv = create_srv(None).await.unwrap();
+    let srv = create_srv().await.unwrap();
     let first_port = srv.ports.start();
     for p in first_port..first_port + srv.ports.total() {
         let id = Uuid::new_v4();
@@ -496,7 +496,7 @@ async fn test_register_and_heartbeat() {
 }
 
 async fn setup_with_channel() -> anyhow::Result<(VoiceServerImpl, Uuid)> {
-    let srv = create_srv(None).await?;
+    let srv = create_srv().await?;
     let chan_id = Uuid::new_v4();
     srv.assign_channel_impl(chan_id).await?;
     Ok((srv, chan_id))
@@ -532,17 +532,26 @@ async fn open_and_establish(
     Ok((source_id, sock, established.crypt_key))
 }
 
-async fn create_srv(registry: Option<CloneableMockRegister>) -> anyhow::Result<VoiceServerImpl> {
+async fn create_standalone_srv(
+    registry: CloneableMockRegister,
+) -> anyhow::Result<VoiceServerImpl> {
     init_tracing();
     let voice_cfg = VoiceServerConfig {
         first_udp_port: 0,
         udp_ports: 5,
         udp_host: "localhost".into(),
     };
-    match registry {
-        Some(registry) => voice_cfg.server_with_registry(Arc::new(registry)).await,
-        None => voice_cfg.server().await,
-    }
+    voice_cfg.server_with_registry(Arc::new(registry)).await
+}
+
+async fn create_srv() -> anyhow::Result<VoiceServerImpl> {
+    init_tracing();
+    let voice_cfg = VoiceServerConfig {
+        first_udp_port: 0,
+        udp_ports: 5,
+        udp_host: "localhost".into(),
+    };
+    voice_cfg.server().await
 }
 
 fn init_tracing() {

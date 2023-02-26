@@ -10,7 +10,6 @@ use crate::{
     VoiceServerImpl,
 };
 
-pub mod client;
 #[path = "./voice_server.v1.rs"]
 pub mod proto;
 pub use tonic;

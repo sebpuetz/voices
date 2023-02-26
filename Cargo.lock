@@ -2241,7 +2241,6 @@ dependencies = [
  "udp-proto",
  "uuid",
  "voice-proto",
- "voices-channels",
  "voices-crypto",
  "xsalsa20poly1305",
 ]
@@ -2313,6 +2312,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tonic",
+ "tonic-build",
  "tower-http",
  "tracing",
  "tracing-log",
