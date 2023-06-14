@@ -1,13 +1,12 @@
 use async_trait::async_trait;
 use uuid::Uuid;
-use voice_server::{VoiceServer, VoiceServerImpl};
 
 use voices_channels::grpc::proto::channels_server::Channels;
 use voices_channels::grpc::service::ChannelsImpl;
 
 #[async_trait]
 pub trait ChannelRegistry: Clone + Send + Sync + 'static {
-    type Voice: VoiceServer + Clone;
+    type Voice: VoiceHost + Clone;
     async fn get_voice_host(
         &self,
         channel_id: Uuid,
@@ -17,22 +16,22 @@ pub trait ChannelRegistry: Clone + Send + Sync + 'static {
 
 /// Integrated Channel Registry
 ///
-/// Owns a both [`ChannelsImpl`] and [`VoiceServerImpl`]
+/// Owns a both [`ChannelsImpl`] and [`IntegratedVoiceHost`]
 #[derive(Clone)]
 pub struct LocalChannelRegistry {
     channels: ChannelsImpl,
-    voice: VoiceServerImpl,
+    voice: IntegratedVoiceHost,
 }
 
 impl LocalChannelRegistry {
-    pub fn new(channels: ChannelsImpl, voice: VoiceServerImpl) -> Self {
+    pub fn new(channels: ChannelsImpl, voice: IntegratedVoiceHost) -> Self {
         Self { channels, voice }
     }
 }
 
 #[async_trait]
 impl ChannelRegistry for LocalChannelRegistry {
-    type Voice = VoiceServerImpl;
+    type Voice = IntegratedVoiceHost;
 
     async fn get_voice_host(
         &self,
@@ -46,27 +45,25 @@ impl ChannelRegistry for LocalChannelRegistry {
         self.channels
             .get_channel(tonic::Request::new(request))
             .await?;
-        let request = voice_server::grpc::proto::AssignChannelRequest {
-            channel_id: channel_id.to_string(),
-        };
         // assign channel to the local voice server
-        self.voice
-            .assign_channel(tonic::Request::new(request))
-            .await?;
+        self.voice.assign_channel(channel_id).await?;
         Ok(Some(self.voice.clone()))
     }
 }
 
 pub use distributed::DistributedChannelRegistry;
 
+use super::voice_instance::{IntegratedVoiceHost, VoiceHost};
+
 mod distributed {
+    use anyhow::Context;
     use async_trait::async_trait;
     use uuid::Uuid;
 
     // use crate::server::channels::voice_channels::VoiceChannels;
     use crate::server::channels::voice_channels_proto::channels_client::ChannelsClient;
     use crate::server::channels::voice_channels_proto::{AssignChannelRequest, GetChannelRequest};
-    use crate::server::voice_instance::voice_server_proto as proto;
+    use crate::server::voice_instance::{RemoteVoiceHost, VoiceHost};
 
     use super::ChannelRegistry;
 
@@ -88,9 +85,8 @@ mod distributed {
 
     #[async_trait]
     impl ChannelRegistry for DistributedChannelRegistry {
-
-        // TODO: Implement trait VoiceHost for the client and VoiceServerImpl
-        type Voice = proto::voice_server_client::VoiceServerClient<tonic::transport::Channel>;
+        // TODO: Implement trait VoiceHost for the client and IntegratedVoiceHost
+        type Voice = RemoteVoiceHost;
 
         async fn get_voice_host(
             &self,
@@ -108,18 +104,14 @@ mod distributed {
                 .into_inner();
             match req.voice_server_host {
                 Some(host) if !reassign => {
-                    let mut client =
-                        proto::voice_server_client::VoiceServerClient::connect(host).await?;
-                    let msg = proto::StatusRequest {
-                        channel_id: channel_id.to_string(),
-                    };
-                    if let Err(e) = client.status(tonic::Request::new(msg)).await {
+                    let client = RemoteVoiceHost::new(
+                        host.parse()
+                            .context("failed to parse voice server host uri")?,
+                    );
+                    if let Err(e) = client.status(channel_id).await {
                         if e.code() == tonic::Code::NotFound {
                             tracing::info!("voice server lost the channel");
-                            let request = proto::AssignChannelRequest {
-                                channel_id: channel_id.to_string(),
-                            };
-                            client.assign_channel(tonic::Request::new(request)).await?;
+                            client.assign_channel(channel_id).await?;
                         } else {
                             return Err(e.into());
                         }
@@ -138,14 +130,13 @@ mod distributed {
                         .assign_channel(tonic::Request::new(request))
                         .await?
                         .into_inner();
-                    let mut client = proto::voice_server_client::VoiceServerClient::connect(
-                        resp.voice_server_host,
-                    )
-                    .await?;
-                    let request = proto::AssignChannelRequest {
-                        channel_id: channel_id.to_string(),
-                    };
-                    client.assign_channel(tonic::Request::new(request)).await?;
+                    let client = RemoteVoiceHost::new(
+                        resp.voice_server_host
+                            .parse()
+                            .context("failed to parse voice server host uri")?,
+                    );
+                    client.assign_channel(channel_id).await?;
+
                     return Ok(Some(client));
                 }
             }

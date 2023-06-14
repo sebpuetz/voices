@@ -64,11 +64,10 @@ impl Channel {
             EstablishSessionError::Other(anyhow::anyhow!("failed to send channel request"))
         })?;
 
-        let resp = rx.await.map_err(|_| {
+        rx.await.map_err(|_| {
             tracing::warn!("failed to establish session");
             EstablishSessionError::Other(anyhow::anyhow!("failed to open connection"))
-        })?;
-        resp
+        })?
     }
 
     #[tracing::instrument(skip_all)]
@@ -102,8 +101,7 @@ impl Channel {
             .send(msg)
             .await
             .context("failed sending channel request")?;
-        let resp = rx.await.context("status response failed")?;
-        resp
+        rx.await.context("status response failed")?
     }
 
     pub async fn leave(&self, client_id: Uuid) -> Option<()> {

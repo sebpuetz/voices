@@ -91,10 +91,8 @@ impl Channel {
     ) -> Result<Option<Self>, DbError> {
         tracing::info!(reassign, "assigning channel {} to voice srv {}", cid, sid);
         let conn = pool.get().await?;
-        let res = conn
-            .interact(move |conn| Self::do_assign_to(cid, sid, reassign, conn))
-            .await?;
-        res
+        conn.interact(move |conn| Self::do_assign_to(cid, sid, reassign, conn))
+            .await?
     }
 
     fn do_assign_to(

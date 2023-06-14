@@ -9,10 +9,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
-use voice_server::VoiceServer;
 
 use super::channel_registry::ChannelRegistry;
 use super::channel_state::ChannelState;
+use super::voice_instance::VoiceHost;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ClientInfo {
@@ -129,7 +129,7 @@ where
 pub struct Channel<S, V>
 where
     S: ChannelState,
-    V: VoiceServer + Clone,
+    V: VoiceHost + Clone,
 {
     room_id: Uuid,
     state: S,
@@ -139,7 +139,7 @@ where
 impl<S, V> Channel<S, V>
 where
     S: ChannelState,
-    V: VoiceServer + Clone,
+    V: VoiceHost + Clone,
 {
     pub async fn new(id: Uuid, state: S, voice: V) -> anyhow::Result<Self> {
         let slf = Self {
