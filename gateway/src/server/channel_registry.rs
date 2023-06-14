@@ -8,7 +8,7 @@ use voices_channels::grpc::service::ChannelsImpl;
 #[async_trait]
 pub trait ChannelRegistry: Clone + Send + Sync + 'static {
     type Voice: VoiceServer + Clone;
-    async fn get_voice(
+    async fn get_voice_host(
         &self,
         channel_id: Uuid,
         reassign: bool,
@@ -34,7 +34,7 @@ impl LocalChannelRegistry {
 impl ChannelRegistry for LocalChannelRegistry {
     type Voice = VoiceServerImpl;
 
-    async fn get_voice(
+    async fn get_voice_host(
         &self,
         channel_id: Uuid,
         _reassign: bool,
@@ -66,6 +66,7 @@ mod distributed {
     // use crate::server::channels::voice_channels::VoiceChannels;
     use crate::server::channels::voice_channels_proto::channels_client::ChannelsClient;
     use crate::server::channels::voice_channels_proto::{AssignChannelRequest, GetChannelRequest};
+    use crate::server::voice_instance::voice_server_proto as proto;
 
     use super::ChannelRegistry;
 
@@ -87,11 +88,11 @@ mod distributed {
 
     #[async_trait]
     impl ChannelRegistry for DistributedChannelRegistry {
-        type Voice = voice_server::grpc::proto::voice_server_client::VoiceServerClient<
-            tonic::transport::Channel,
-        >;
 
-        async fn get_voice(
+        // TODO: Implement trait VoiceHost for the client and VoiceServerImpl
+        type Voice = proto::voice_server_client::VoiceServerClient<tonic::transport::Channel>;
+
+        async fn get_voice_host(
             &self,
             channel_id: Uuid,
             reassign: bool,
@@ -108,17 +109,14 @@ mod distributed {
             match req.voice_server_host {
                 Some(host) if !reassign => {
                     let mut client =
-                        voice_server::grpc::proto::voice_server_client::VoiceServerClient::connect(
-                            host,
-                        )
-                        .await?;
-                    let msg = voice_server::grpc::proto::StatusRequest {
+                        proto::voice_server_client::VoiceServerClient::connect(host).await?;
+                    let msg = proto::StatusRequest {
                         channel_id: channel_id.to_string(),
                     };
                     if let Err(e) = client.status(tonic::Request::new(msg)).await {
                         if e.code() == tonic::Code::NotFound {
                             tracing::info!("voice server lost the channel");
-                            let request = voice_server::grpc::proto::AssignChannelRequest {
+                            let request = proto::AssignChannelRequest {
                                 channel_id: channel_id.to_string(),
                             };
                             client.assign_channel(tonic::Request::new(request)).await?;
@@ -140,12 +138,11 @@ mod distributed {
                         .assign_channel(tonic::Request::new(request))
                         .await?
                         .into_inner();
-                    let mut client =
-                        voice_server::grpc::proto::voice_server_client::VoiceServerClient::connect(
-                            resp.voice_server_host,
-                        )
-                        .await?;
-                    let request = voice_server::grpc::proto::AssignChannelRequest {
+                    let mut client = proto::voice_server_client::VoiceServerClient::connect(
+                        resp.voice_server_host,
+                    )
+                    .await?;
+                    let request = proto::AssignChannelRequest {
                         channel_id: channel_id.to_string(),
                     };
                     client.assign_channel(tonic::Request::new(request)).await?;
