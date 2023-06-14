@@ -83,7 +83,7 @@ where
         }
         let voice = self
             .registry
-            .get_voice(id, false)
+            .get_voice_host(id, false)
             .await?
             .context("no voice server available")?;
         let state = self.channel_init.init(id, self.clone()).await?;
@@ -96,7 +96,7 @@ where
     pub async fn reassign_voice(&self, channel_id: Uuid) -> anyhow::Result<Channel<S, R::Voice>> {
         let voice = self
             .registry
-            .get_voice(channel_id, true)
+            .get_voice_host(channel_id, true)
             .await?
             .context("no voice server available")?;
         match self.inner.write().await.entry(channel_id) {
