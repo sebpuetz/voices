@@ -189,7 +189,7 @@ impl VoiceServerImpl {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct OpenConnection {
     pub user_name: String,
     pub channel_id: Uuid,

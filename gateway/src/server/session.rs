@@ -1,22 +1,21 @@
-use std::net::{IpAddr, SocketAddr};
-use std::str::FromStr;
+use std::net::SocketAddr;
 use std::time::Duration;
 
-use anyhow::Context;
 use futures_util::{Future, FutureExt};
 use tokio::select;
 use tracing::Instrument;
 use uuid::Uuid;
-use voice_server::grpc::{proto, tonic};
-use voice_server::VoiceServer;
+use voice_server::channel::connection::ConnectionState;
 use voices_ws_proto::{ClientEvent, Init, Join, Present};
 
 use crate::server::channels::{ChannelEvent, ChannelEventKind, Channels, ClientInfo};
+use crate::server::voice_instance::OpenConnection;
 use crate::server::ws::ControlStream;
 
 use super::channel_registry::ChannelRegistry;
 use super::channel_state::ChannelState;
 use super::channels::ChatRoomJoined;
+use super::voice_instance::{EstablishSession, VoiceHost};
 use super::ws::ControlStreamError;
 
 /// Representation of a client session
@@ -182,31 +181,28 @@ where
         tracing::debug!("announcing udp");
         // should return source_id
         let client_id = self.client_id;
-        let msg = proto::OpenConnectionRequest {
+        let req = OpenConnection {
             user_name: self.client_name.clone(),
-            user_id: self.client_id.to_string(),
-            channel_id: channel_id.to_string(),
+            channel_id,
+            client_id: self.client_id,
         };
-        let req = tonic::Request::new(msg.clone());
-        let resp = match channel.voice().open_connection(req).await {
-            Ok(o) => o.into_inner(),
+        // FIXME: proper error handling instead of tonic::Status here
+        // FIXME: forbid joining twice - messes up some internal state
+        let resp = match channel.voice().open_connection(req.clone()).await {
+            Ok(o) => o,
             Err(e) => {
                 if e.code() == tonic::Code::NotFound {
                     channel = self.channels.reassign_voice(channel_id).await?;
-                    let req = tonic::Request::new(msg);
-                    channel.voice().open_connection(req).await?.into_inner()
+                    channel.voice().open_connection(req).await?
                 } else {
                     tracing::warn!("open conn failed {:?}", e);
                     return Err(e.into());
                 }
             }
         };
-        let addr = resp.udp_sock.context("Missing response field")?;
-        let port = addr.port as u16;
-        let ip = IpAddr::from_str(&addr.ip).context("Invalid IpAddr")?;
-        let udp_addr = SocketAddr::from((ip, port));
+        let udp_addr = resp.sock;
         tracing::debug!("udp running on {:?}", udp_addr);
-        let source_id = resp.src_id;
+        let source_id = resp.source_id;
         self.ctl.announce_udp(udp_addr, source_id).await?;
         tracing::debug!("announced udp, waiting for client udp addr");
 
@@ -214,18 +210,13 @@ where
         let client_udp = SocketAddr::from((client_udp.ip, client_udp.port));
         anyhow::ensure!(!client_udp.ip().is_unspecified());
         tracing::debug!("received client udp addr {client_udp}");
-
-        let req = proto::EstablishSessionRequest {
-            user_id: self.client_id.to_string(),
-            channel_id: channel_id.to_string(),
-            client_sock: Some(proto::SockAddr {
-                port: client_udp.port() as _,
-                ip: client_udp.ip().to_string(),
-            }),
+        let request = EstablishSession {
+            channel_id,
+            client_id,
+            client_addr: client_udp,
         };
-        let req = tonic::Request::new(req);
-        let resp = match channel.voice().establish_session(req).await {
-            Ok(o) => o.into_inner(),
+        let resp = match channel.voice().establish_session(request).await {
+            Ok(o) => o,
             Err(e) => {
                 if e.code() == tonic::Code::NotFound {}
                 tracing::warn!("open conn failed {:?}", e);
@@ -235,20 +226,15 @@ where
 
         let crypt_key = base64::encode(resp.crypt_key).into();
         tracing::debug!("successfully notified udp task");
-        let req = proto::StatusRequest {
-            channel_id: channel_id.to_string(),
-        };
-        let status_request = tonic::Request::new(req);
-        let present = match channel.voice().status(status_request).await {
-            Ok(o) => dbg!(o.into_inner().info)
+
+        let present = match channel.voice().status(channel_id).await {
+            Ok(o) => dbg!(o)
                 .into_iter()
                 .filter_map(|v| {
-                    dbg!(
-                        (v.client_id.parse::<Uuid>().ok()? != client_id).then_some(Present {
-                            user: v.name,
-                            source_id: v.src_id,
-                        })
-                    )
+                    dbg!((v.id != client_id).then_some(Present {
+                        user: v.name,
+                        source_id: v.source_id,
+                    }))
                 })
                 .collect(),
             Err(e) => {
@@ -283,7 +269,7 @@ where
     }
 }
 
-fn status_check<V: VoiceServer>(
+fn status_check<V: VoiceHost>(
     voice_handle: V,
     client_id: Uuid,
     channel_id: Uuid,
@@ -295,25 +281,17 @@ fn status_check<V: VoiceServer>(
             inter.tick().await;
             loop {
                 inter.tick().await;
-                let req = tonic::Request::new(proto::UserStatusRequest {
-                    user_id: client_id.to_string(),
-                    channel_id: channel_id.to_string(),
-                });
-                match voice_handle
-                    .user_status(req)
-                    .await
-                    .map(|req| req.into_inner().status)
-                {
-                    Ok(Some(proto::user_status_response::Status::Peered(()))) => {
+                match voice_handle.user_status(channel_id, client_id).await {
+                    Ok(ConnectionState::Peered) => {
                         tracing::trace!("voice connection is in peered state");
                         continue;
                     }
-                    Ok(Some(proto::user_status_response::Status::Waiting(()))) => {
+                    Ok(ConnectionState::Waiting) => {
                         tracing::trace!("voice connection is in waiting state");
                         continue;
                     }
-                    Ok(Some(proto::user_status_response::Status::Error(()))) | Ok(None) => {
-                        tracing::info!("voice connection errored");
+                    Ok(ConnectionState::Stopped) => {
+                        tracing::info!("voice connection stopped");
                         break;
                     }
                     Err(status) => {
@@ -335,7 +313,7 @@ fn status_check<V: VoiceServer>(
 #[allow(unused)]
 pub struct VoiceHandle<V, S>
 where
-    V: VoiceServer + Clone,
+    V: VoiceHost + Clone,
     S: ChannelState,
 {
     client_id: Uuid,
@@ -348,7 +326,7 @@ where
 
 impl<V, S> Future for VoiceHandle<V, S>
 where
-    V: VoiceServer + Clone + Unpin,
+    V: VoiceHost + Clone + Unpin,
     S: ChannelState + Unpin,
 {
     type Output = anyhow::Result<()>;
@@ -363,16 +341,14 @@ where
 
 impl<V, S> Drop for VoiceHandle<V, S>
 where
-    V: VoiceServer + Clone,
+    V: VoiceHost + Clone,
     S: ChannelState,
 {
     fn drop(&mut self) {
-        let req = tonic::Request::new(proto::LeaveRequest {
-            user_id: self.client_id.to_string(),
-            channel_id: self.channel_id.to_string(),
-        });
         let handle = self.voice_server.clone();
-        tokio::spawn(async move { handle.leave(req).await });
+        let channel_id = self.channel_id;
+        let client_id = self.client_id;
+        tokio::spawn(async move { handle.leave(channel_id, client_id).await });
         self.status_handle.abort();
     }
 }

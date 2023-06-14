@@ -19,6 +19,7 @@ use tracing_subscriber::prelude::*;
 
 use crate::server::channel_registry::{DistributedChannelRegistry, LocalChannelRegistry};
 use crate::server::channels::Channels;
+use crate::server::voice_instance::IntegratedVoiceHost;
 
 #[derive(Parser)]
 #[clap(name = "voice-server")]
@@ -102,7 +103,7 @@ async fn main_() -> anyhow::Result<()> {
                 ))
             };
             let channels_impl = channels_config.server().await?;
-            let voice = voice_config.server().await?;
+            let voice = IntegratedVoiceHost::new(voice_config.server().await?);
             let local_registry = LocalChannelRegistry::new(channels_impl, voice);
             let channels = Channels::new(room_init, local_registry);
             serve(ctl_listener, channels).await

@@ -11,10 +11,10 @@ pub mod schema;
 
 pub mod grpc;
 pub mod server;
-#[cfg(any(test, feature = "test"))]
-pub mod test_helper;
 #[cfg(test)]
 mod test;
+#[cfg(any(test, feature = "test"))]
+pub mod test_helper;
 
 #[derive(Debug, Parser)]
 pub struct ChannelsConfig {

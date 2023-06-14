@@ -532,9 +532,7 @@ async fn open_and_establish(
     Ok((source_id, sock, established.crypt_key))
 }
 
-async fn create_standalone_srv(
-    registry: CloneableMockRegister,
-) -> anyhow::Result<VoiceServerImpl> {
+async fn create_standalone_srv(registry: CloneableMockRegister) -> anyhow::Result<VoiceServerImpl> {
     init_tracing();
     let voice_cfg = VoiceServerConfig {
         first_udp_port: 0,
