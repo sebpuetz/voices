@@ -2,7 +2,7 @@
 pub mod voice_channels_proto;
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use anyhow::Context;
 use async_trait::async_trait;
@@ -22,52 +22,57 @@ pub struct ClientInfo {
 }
 
 #[async_trait]
-pub trait ChannelInit<S, R>: Send + Sync + 'static
-where
-    S: ChannelState,
-    R: ChannelRegistry,
-{
-    async fn init(&self, uuid: Uuid, channels: Channels<S, R>) -> anyhow::Result<S>;
+pub trait ChannelInit<S, V>: Send + Sync + 'static {
+    async fn init(&self, uuid: Uuid, channels: Weak<ChannelMap<S, V>>) -> anyhow::Result<S>;
 }
 
 #[async_trait]
-impl<F, Fut, S, R> ChannelInit<S, R> for F
+impl<F, Fut, S, V> ChannelInit<S, V> for F
 where
-    F: 'static + Send + Sync + Fn(Uuid, Channels<S, R>) -> Fut,
+    F: 'static + Send + Sync + Fn(Uuid, Weak<ChannelMap<S, V>>) -> Fut,
     Fut: Send + std::future::Future<Output = anyhow::Result<S>>,
-    S: ChannelState,
-    R: ChannelRegistry,
+    S: Send + Sync + 'static,
+    V: Send + Sync + 'static,
 {
-    async fn init(&self, uuid: Uuid, channels: Channels<S, R>) -> anyhow::Result<S> {
+    async fn init(&self, uuid: Uuid, channels: Weak<ChannelMap<S, V>>) -> anyhow::Result<S> {
         (self)(uuid, channels).await
     }
 }
 
 /// In-memory representation of channels
 #[derive(Clone)]
-pub struct Channels<S, R>
-where
-    S: ChannelState,
-    R: ChannelRegistry,
-{
+pub struct Channels<S, R, V> {
     registry: R,
     // channels with sessions on this instance
     #[allow(clippy::type_complexity)]
-    inner: Arc<RwLock<HashMap<Uuid, Channel<S, R::Voice>>>>,
-    channel_init: Arc<dyn ChannelInit<S, R>>,
+    channel_map: Arc<ChannelMap<S, V>>,
+    channel_init: Arc<dyn ChannelInit<S, V>>,
 }
 
-impl<S, R> Channels<S, R>
+pub struct ChannelMap<S, V> {
+    inner: RwLock<HashMap<Uuid, Channel<S, V>>>,
+}
+
+impl<S, V> ChannelMap<S, V> {
+    pub async fn close(&self, channel: Uuid) {
+        // FIXME: there should be some check that there's no pending joins on this channel / no live handles
+        let _ = self.inner.write().await.remove(&channel);
+    }
+}
+
+impl<S, R> Channels<S, R, R::Voice>
 where
     S: ChannelState,
     R: ChannelRegistry,
 {
     pub fn new<F>(room_init: F, registry: R) -> Self
     where
-        F: ChannelInit<S, R>,
+        F: ChannelInit<S, R::Voice>,
     {
         Self {
-            inner: Arc::default(),
+            channel_map: Arc::new(ChannelMap {
+                inner: RwLock::new(HashMap::new()),
+            }),
             channel_init: Arc::new(room_init),
             registry,
         }
@@ -78,7 +83,7 @@ where
     where
         R: 'static,
     {
-        if let Some(room) = self.inner.read().await.get(&id) {
+        if let Some(room) = self.channel_map.inner.read().await.get(&id) {
             return Ok(room.clone());
         }
         let voice = self
@@ -86,9 +91,17 @@ where
             .get_voice_host(id, false)
             .await?
             .context("no voice server available")?;
-        let state = self.channel_init.init(id, self.clone()).await?;
+        let weak = Arc::downgrade(&self.channel_map);
+        let state = self.channel_init.init(id, weak).await?;
         let room = Channel::new(id, state, voice).await?;
-        let r = self.inner.write().await.entry(id).or_insert(room).clone();
+        let r = self
+            .channel_map
+            .inner
+            .write()
+            .await
+            .entry(id)
+            .or_insert(room)
+            .clone();
         Ok(r)
     }
 
@@ -99,22 +112,28 @@ where
             .get_voice_host(channel_id, true)
             .await?
             .context("no voice server available")?;
-        match self.inner.write().await.entry(channel_id) {
+        match self.channel_map.inner.write().await.entry(channel_id) {
             std::collections::hash_map::Entry::Occupied(mut o) => {
                 let chan = o.get_mut();
                 chan.voice = voice;
                 Ok(chan.clone())
             }
             std::collections::hash_map::Entry::Vacant(v) => {
-                let state = self.channel_init.init(channel_id, self.clone()).await?;
+                let weak = Arc::downgrade(&self.channel_map);
+                let state = self.channel_init.init(channel_id, weak).await?;
                 let room = Channel::new(channel_id, state, voice).await?;
                 Ok(v.insert(room).to_owned())
             }
         }
     }
 
-    pub async fn close(&self, id: Uuid) -> Option<Uuid> {
-        self.inner.write().await.remove(&id).map(|_| id)
+    pub async fn close(&self, channel_id: Uuid) -> Option<Uuid> {
+        self.channel_map
+            .inner
+            .write()
+            .await
+            .remove(&channel_id)
+            .map(|_| channel_id)
     }
 
     pub fn registry(&self) -> &R {
@@ -126,11 +145,7 @@ where
 ///
 /// Offers a broadcast sender for channel events, a list of present users by ID and a voice sender
 #[derive(Clone)]
-pub struct Channel<S, V>
-where
-    S: ChannelState,
-    V: VoiceHost + Clone,
-{
+pub struct Channel<S, V> {
     room_id: Uuid,
     state: S,
     voice: V,
@@ -170,22 +185,14 @@ where
 }
 
 #[derive(Clone)]
-pub struct LocallyPresent<S, R>
-where
-    S: ChannelState,
-    R: ChannelRegistry,
-{
+pub struct LocallyPresent<S, V> {
     id: Uuid,
     present: Arc<RwLock<HashMap<Uuid, ClientInfo>>>,
-    channels: Channels<S, R>,
+    channels: Weak<ChannelMap<S, V>>,
 }
 
-impl<S, R> LocallyPresent<S, R>
-where
-    S: ChannelState,
-    R: ChannelRegistry,
-{
-    pub fn new(id: Uuid, channels: Channels<S, R>) -> Self {
+impl<S, V> LocallyPresent<S, V> {
+    pub fn new(id: Uuid, channels: Weak<ChannelMap<S, V>>) -> Self {
         Self {
             id,
             present: Arc::default(),
@@ -200,9 +207,13 @@ where
     pub async fn leave(&self, client_id: Uuid) {
         let mut guard = self.present.write().await;
         guard.remove(&client_id);
+        // FIXME: there's probably a race between joiners waiting on the write lock and removing the channel
+        // from the local channel registry
         if guard.is_empty() {
-            tracing::info!(channel_id=?self.id, "last client left, closing");
-            self.channels.close(self.id).await.unwrap();
+            if let Some(channels) = self.channels.upgrade() {
+                tracing::info!(channel_id=?self.id, "last client left, closing");
+                channels.close(self.id).await;
+            }
         }
     }
 

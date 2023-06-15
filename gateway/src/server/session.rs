@@ -37,7 +37,7 @@ where
     voice: Option<VoiceHandle<R::Voice, S>>,
 
     // channel registry
-    channels: Channels<S, R>,
+    channels: Channels<S, R, R::Voice>,
 }
 
 impl<R, S> ServerSession<R, S>
@@ -51,7 +51,7 @@ where
     #[tracing::instrument(skip_all)]
     pub async fn init(
         ctl: axum::extract::ws::WebSocket,
-        channels: Channels<S, R>,
+        channels: Channels<S, R, R::Voice>,
     ) -> anyhow::Result<Self> {
         let mut ctl = ControlStream::new(ctl);
         tracing::debug!("waiting for handshake");
