@@ -50,11 +50,12 @@ impl ChannelRegistry for LocalChannelRegistry {
         Ok(Some(self.voice.clone()))
     }
 }
-
+#[cfg(feature = "distributed")]
 pub use distributed::DistributedChannelRegistry;
 
 use super::voice_instance::{IntegratedVoiceHost, VoiceHost};
 
+#[cfg(feature = "distributed")]
 mod distributed {
     use anyhow::Context;
     use async_trait::async_trait;

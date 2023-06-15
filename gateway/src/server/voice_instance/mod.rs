@@ -1,4 +1,5 @@
 pub use integrated::IntegratedVoiceHost;
+#[cfg(feature = "distributed")]
 pub use remote::RemoteVoiceHost;
 pub use voice_server::{
     channel::connection::ConnectionState, ConnectionData, EstablishSession, OpenConnection, Peer,
@@ -6,7 +7,9 @@ pub use voice_server::{
 };
 
 mod integrated;
+#[cfg(feature = "distributed")]
 mod remote;
+#[cfg(feature = "distributed")]
 #[path = "voice_server.v1.rs"]
 mod voice_server_proto;
 use async_trait::async_trait;

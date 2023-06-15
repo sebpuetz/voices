@@ -111,7 +111,10 @@ async fn main_() -> anyhow::Result<()> {
     }
 }
 
-async fn serve<S, R>(ctl_listener: TcpListener, channels: Channels<S, R>) -> anyhow::Result<()>
+async fn serve<S, R>(
+    ctl_listener: TcpListener,
+    channels: Channels<S, R, R::Voice>,
+) -> anyhow::Result<()>
 where
     R: ChannelRegistry,
     S: ChannelState,
@@ -162,7 +165,7 @@ where
     R: ChannelRegistry,
     S: ChannelState,
 {
-    channels: Channels<S, R>,
+    channels: Channels<S, R, R::Voice>,
 }
 
 async fn websocket_handler<S, R>(
@@ -182,7 +185,10 @@ where
     })
 }
 
-async fn handle_session<R, S>(socket: WebSocket, channels: Channels<S, R>) -> anyhow::Result<()>
+async fn handle_session<R, S>(
+    socket: WebSocket,
+    channels: Channels<S, R, R::Voice>,
+) -> anyhow::Result<()>
 where
     R: ChannelRegistry,
     S: ChannelState,

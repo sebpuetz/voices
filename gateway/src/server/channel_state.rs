@@ -1,3 +1,5 @@
+use std::sync::Weak;
+
 // publish: join / leave
 // unsubscribe on last
 use async_trait::async_trait;
@@ -6,8 +8,8 @@ use redis::AsyncCommands;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use super::channel_registry::{DistributedChannelRegistry, LocalChannelRegistry};
-use super::channels::{ChannelEvent, Channels, ClientInfo, LocallyPresent};
+use super::channels::{ChannelEvent, ChannelMap, ClientInfo, LocallyPresent};
+use super::voice_instance::{IntegratedVoiceHost, RemoteVoiceHost};
 
 #[async_trait]
 pub trait ChannelState: Clone + Send + Sync + 'static {
@@ -24,14 +26,14 @@ pub trait ChannelState: Clone + Send + Sync + 'static {
 #[derive(Clone)]
 pub struct LocalChannelEvents {
     tx: broadcast::Sender<ChannelEvent>,
-    locally_present: LocallyPresent<LocalChannelEvents, LocalChannelRegistry>,
+    locally_present: LocallyPresent<LocalChannelEvents, IntegratedVoiceHost>,
 }
 
 impl LocalChannelEvents {
     pub fn new(
         channel_id: Uuid,
         tx: broadcast::Sender<ChannelEvent>,
-        channels: Channels<Self, LocalChannelRegistry>,
+        channels: Weak<ChannelMap<LocalChannelEvents, IntegratedVoiceHost>>,
     ) -> Self {
         let locally_present = LocallyPresent::new(channel_id, channels);
         Self {
@@ -66,13 +68,14 @@ impl ChannelState for LocalChannelEvents {
     }
 }
 
+// FIXME: Feature gates
 /// Channel event implementation broadcasting over Redis PubSub
 #[derive(Clone)]
 pub struct RedisChannelEvents {
     channel_id: Uuid,
     broadcast_tx: broadcast::Sender<ChannelEvent>,
     pool: deadpool_redis::Pool,
-    locally_present: LocallyPresent<RedisChannelEvents, DistributedChannelRegistry>,
+    locally_present: LocallyPresent<RedisChannelEvents, RemoteVoiceHost>,
 }
 
 #[async_trait]
@@ -121,7 +124,7 @@ impl RedisChannelEvents {
     pub async fn new(
         channel_id: Uuid,
         pool: deadpool_redis::Pool,
-        channels: Channels<Self, DistributedChannelRegistry>,
+        channels: Weak<ChannelMap<RedisChannelEvents, RemoteVoiceHost>>,
     ) -> anyhow::Result<Self> {
         let (tx, _) = broadcast::channel(100);
         let src = RedisEventSource::new(channel_id, pool.clone(), tx.clone()).await?;
