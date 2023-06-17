@@ -261,6 +261,7 @@ impl Forwarder {
         tracing::info!("end notify sent");
     }
 
+    // FIXME: return explicit controlflow instead of bool
     async fn event(&mut self) -> anyhow::Result<bool> {
         tokio::select! {
             pack = self.socket.recv_proto_from::<ClientMessage>() => {

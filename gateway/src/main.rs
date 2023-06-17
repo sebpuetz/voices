@@ -1,6 +1,8 @@
 // pub mod rest_api;
+pub mod channel_registry;
 pub mod server;
 mod util;
+pub mod voice_instance;
 
 use std::net::SocketAddr;
 
@@ -8,18 +10,21 @@ use axum::extract::ws::WebSocket;
 use axum::http::{HeaderValue, Method};
 use clap::{CommandFactory, FromArgMatches, Parser};
 // use rest_api::{new_channel, servers};
-use server::channel_registry::ChannelRegistry;
-use server::channel_state::{ChannelState, LocalChannelEvents, RedisChannelEvents};
 use server::session::ServerSession;
+use server::channels::state::ChannelState;
+use server::channels::state::distributed::RedisChannelInitializer;
+use server::channels::state::local::LocalChannelInitializer;
 use tokio::net::TcpListener;
 use tracing::subscriber::set_global_default;
 // use tracing::Instrument;
 use tracing_log::LogTracer;
 use tracing_subscriber::prelude::*;
 
-use crate::server::channel_registry::{DistributedChannelRegistry, LocalChannelRegistry};
+use crate::channel_registry::{
+    distributed::DistributedChannelRegistry, integrated::LocalChannelRegistry, ChannelRegistry,
+};
 use crate::server::channels::Channels;
-use crate::server::voice_instance::IntegratedVoiceHost;
+use crate::voice_instance::IntegratedVoiceHost;
 
 #[derive(Parser)]
 #[clap(name = "voice-server")]
@@ -82,10 +87,7 @@ async fn main_() -> anyhow::Result<()> {
         } => {
             let mgr = deadpool_redis::Manager::new(redis_conn)?;
             let pool = deadpool_redis::Pool::builder(mgr).build()?;
-            let room_init = move |id, channels| {
-                let pool = pool.clone();
-                async move { RedisChannelEvents::new(id, pool, channels).await }
-            };
+            let room_init = RedisChannelInitializer::new(pool);
             let registry = DistributedChannelRegistry::new(channels_addr.parse()?);
             let channels = Channels::new(room_init, registry);
 
@@ -95,29 +97,19 @@ async fn main_() -> anyhow::Result<()> {
             voice_config,
             channels_config,
         } => {
-            let room_init = |id, channels| async move {
-                Ok(LocalChannelEvents::new(
-                    id,
-                    tokio::sync::broadcast::channel(100).0,
-                    channels,
-                ))
-            };
             let channels_impl = channels_config.server().await?;
             let voice = IntegratedVoiceHost::new(voice_config.server().await?);
             let local_registry = LocalChannelRegistry::new(channels_impl, voice);
-            let channels = Channels::new(room_init, local_registry);
+            let channels = Channels::new(LocalChannelInitializer, local_registry);
             serve(ctl_listener, channels).await
         }
     }
 }
 
-async fn serve<S, R>(
-    ctl_listener: TcpListener,
-    channels: Channels<S, R, R::Voice>,
-) -> anyhow::Result<()>
+async fn serve<S, R>(ctl_listener: TcpListener, channels: Channels<S, R>) -> anyhow::Result<()>
 where
-    R: ChannelRegistry,
-    S: ChannelState,
+    R: ChannelRegistry + Clone,
+    S: ChannelState + Clone,
 {
     use tower_http::cors::CorsLayer;
     let router = axum::Router::new()
@@ -165,7 +157,7 @@ where
     R: ChannelRegistry,
     S: ChannelState,
 {
-    channels: Channels<S, R, R::Voice>,
+    channels: Channels<S, R>,
 }
 
 async fn websocket_handler<S, R>(
@@ -185,10 +177,7 @@ where
     })
 }
 
-async fn handle_session<R, S>(
-    socket: WebSocket,
-    channels: Channels<S, R, R::Voice>,
-) -> anyhow::Result<()>
+async fn handle_session<R, S>(socket: WebSocket, channels: Channels<S, R>) -> anyhow::Result<()>
 where
     R: ChannelRegistry,
     S: ChannelState,
