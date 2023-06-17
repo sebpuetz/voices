@@ -8,9 +8,7 @@ use uuid::Uuid;
 use voice_server::channel::connection::ConnectionState;
 use voice_server::Peer;
 
-use crate::server::voice_instance::voice_server_proto::{
-    self as proto, voice_server_client::VoiceServerClient,
-};
+use super::voice_server_proto::{self as proto, voice_server_client::VoiceServerClient};
 
 #[derive(Clone)]
 pub struct RemoteVoiceHost {

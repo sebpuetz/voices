@@ -1,5 +1,4 @@
-#[path = "./voice_channels.v1.rs"]
-pub mod voice_channels_proto;
+pub mod state;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
@@ -10,9 +9,10 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
-use super::channel_registry::ChannelRegistry;
-use super::channel_state::ChannelState;
-use super::voice_instance::VoiceHost;
+use crate::channel_registry::ChannelRegistry;
+use crate::voice_instance::VoiceHost;
+
+use state::ChannelState;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ClientInfo {
@@ -22,52 +22,44 @@ pub struct ClientInfo {
 }
 
 #[async_trait]
-pub trait ChannelInit<S, V>: Send + Sync + 'static {
-    async fn init(&self, uuid: Uuid, channels: Weak<ChannelMap<S, V>>) -> anyhow::Result<S>;
-}
-
-#[async_trait]
-impl<F, Fut, S, V> ChannelInit<S, V> for F
-where
-    F: 'static + Send + Sync + Fn(Uuid, Weak<ChannelMap<S, V>>) -> Fut,
-    Fut: Send + std::future::Future<Output = anyhow::Result<S>>,
-    S: Send + Sync + 'static,
-    V: Send + Sync + 'static,
-{
-    async fn init(&self, uuid: Uuid, channels: Weak<ChannelMap<S, V>>) -> anyhow::Result<S> {
-        (self)(uuid, channels).await
-    }
+pub trait ChannelInit: Send + Sync + 'static {
+    type ChannelState: ChannelState;
+    async fn init(
+        &self,
+        uuid: Uuid,
+        channels: Weak<ChannelMap>,
+    ) -> anyhow::Result<Self::ChannelState>;
 }
 
 /// In-memory representation of channels
 #[derive(Clone)]
-pub struct Channels<S, R, V> {
+pub struct Channels<S, R> {
     registry: R,
     // channels with sessions on this instance
     #[allow(clippy::type_complexity)]
-    channel_map: Arc<ChannelMap<S, V>>,
-    channel_init: Arc<dyn ChannelInit<S, V>>,
+    channel_map: Arc<ChannelMap>,
+    channel_init: Arc<dyn ChannelInit<ChannelState = S>>,
 }
 
-pub struct ChannelMap<S, V> {
-    inner: RwLock<HashMap<Uuid, Channel<S, V>>>,
+pub struct ChannelMap {
+    inner: RwLock<HashMap<Uuid, Channel>>,
 }
 
-impl<S, V> ChannelMap<S, V> {
+impl ChannelMap {
     pub async fn close(&self, channel: Uuid) {
         // FIXME: there should be some check that there's no pending joins on this channel / no live handles
         let _ = self.inner.write().await.remove(&channel);
     }
 }
-
-impl<S, R> Channels<S, R, R::Voice>
+// State: List Members, Subscribe, Publish
+impl<S, R> Channels<S, R>
 where
     S: ChannelState,
     R: ChannelRegistry,
 {
     pub fn new<F>(room_init: F, registry: R) -> Self
     where
-        F: ChannelInit<S, R::Voice>,
+        F: ChannelInit<ChannelState = S>,
     {
         Self {
             channel_map: Arc::new(ChannelMap {
@@ -79,10 +71,7 @@ where
     }
 
     /// Retrieve the locally running instance of
-    pub async fn get_or_init(&self, id: Uuid) -> anyhow::Result<Channel<S, R::Voice>>
-    where
-        R: 'static,
-    {
+    pub async fn get_or_init(&self, id: Uuid) -> anyhow::Result<Channel> {
         if let Some(room) = self.channel_map.inner.read().await.get(&id) {
             return Ok(room.clone());
         }
@@ -91,8 +80,11 @@ where
             .get_voice_host(id, false)
             .await?
             .context("no voice server available")?;
-        let weak = Arc::downgrade(&self.channel_map);
-        let state = self.channel_init.init(id, weak).await?;
+
+        // FIXME: The channel instance gets a reference to the top level channel map so it can remove itself
+        // after it's empty. This is rather hacky since there's a cycle between the channel and that map.
+        let channels = Arc::downgrade(&self.channel_map);
+        let state = self.channel_init.init(id, channels).await?;
         let room = Channel::new(id, state, voice).await?;
         let r = self
             .channel_map
@@ -106,7 +98,7 @@ where
     }
 
     // FIXME: send reassign event
-    pub async fn reassign_voice(&self, channel_id: Uuid) -> anyhow::Result<Channel<S, R::Voice>> {
+    pub async fn reassign_voice(&self, channel_id: Uuid) -> anyhow::Result<Channel> {
         let voice = self
             .registry
             .get_voice_host(channel_id, true)
@@ -115,12 +107,12 @@ where
         match self.channel_map.inner.write().await.entry(channel_id) {
             std::collections::hash_map::Entry::Occupied(mut o) => {
                 let chan = o.get_mut();
-                chan.voice = voice;
+                chan.voice = Arc::new(voice);
                 Ok(chan.clone())
             }
             std::collections::hash_map::Entry::Vacant(v) => {
-                let weak = Arc::downgrade(&self.channel_map);
-                let state = self.channel_init.init(channel_id, weak).await?;
+                let channels = Arc::downgrade(&self.channel_map);
+                let state = self.channel_init.init(channel_id, channels).await?;
                 let room = Channel::new(channel_id, state, voice).await?;
                 Ok(v.insert(room).to_owned())
             }
@@ -145,80 +137,77 @@ where
 ///
 /// Offers a broadcast sender for channel events, a list of present users by ID and a voice sender
 #[derive(Clone)]
-pub struct Channel<S, V> {
+pub struct Channel {
     room_id: Uuid,
-    state: S,
-    voice: V,
+    state: Arc<dyn ChannelState>,
+    voice: Arc<dyn VoiceHost>,
 }
 
-impl<S, V> Channel<S, V>
-where
-    S: ChannelState,
-    V: VoiceHost + Clone,
-{
-    pub async fn new(id: Uuid, state: S, voice: V) -> anyhow::Result<Self> {
+impl Channel {
+    pub async fn new<S, V>(id: Uuid, state: S, voice: V) -> anyhow::Result<Self>
+    where
+        S: ChannelState,
+        V: VoiceHost,
+    {
         let slf = Self {
             room_id: id,
-            state,
-            voice,
+            state: Arc::new(state),
+            voice: Arc::new(voice),
         };
         Ok(slf)
     }
 
-    pub async fn updates(&self) -> anyhow::Result<broadcast::Receiver<ChannelEvent>> {
-        self.state.subscribe().await
-    }
-
-    pub async fn join(&self, info: ClientInfo) -> anyhow::Result<ChatRoomJoined<S>> {
-        let updates = self.updates().await?;
-        let _ = self.state.join(info.clone()).await;
-        Ok(ChatRoomJoined::new(self.state.clone(), updates, info))
+    pub async fn join(&self, info: ClientInfo) -> anyhow::Result<ChatRoomJoined> {
+        self.state.join(info).await
     }
 
     pub fn id(&self) -> Uuid {
         self.room_id
     }
 
-    pub fn voice(&self) -> &V {
-        &self.voice
+    pub fn voice(&self) -> Arc<dyn VoiceHost> {
+        self.voice.clone()
     }
 }
 
 #[derive(Clone)]
-pub struct LocallyPresent<S, V> {
-    id: Uuid,
-    present: Arc<RwLock<HashMap<Uuid, ClientInfo>>>,
-    channels: Weak<ChannelMap<S, V>>,
+pub struct LocallyPresent {
+    inner: HashMap<Uuid, ClientInfo>,
+    live: bool,
 }
 
-impl<S, V> LocallyPresent<S, V> {
-    pub fn new(id: Uuid, channels: Weak<ChannelMap<S, V>>) -> Self {
+impl Default for LocallyPresent {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LocallyPresent {
+    pub fn new() -> Self {
         Self {
-            id,
-            present: Arc::default(),
-            channels,
+            inner: HashMap::new(),
+            live: true,
         }
     }
 
-    pub async fn join(&self, info: ClientInfo) {
-        self.present.write().await.insert(info.client_id, info);
+    // FIXME: return enum
+    pub fn join(&mut self, info: ClientInfo) -> bool {
+        if !self.live {
+            return false;
+        }
+        self.inner.insert(info.client_id, info);
+        true
     }
 
-    pub async fn leave(&self, client_id: Uuid) {
-        let mut guard = self.present.write().await;
-        guard.remove(&client_id);
-        // FIXME: there's probably a race between joiners waiting on the write lock and removing the channel
-        // from the local channel registry
-        if guard.is_empty() {
-            if let Some(channels) = self.channels.upgrade() {
-                tracing::info!(channel_id=?self.id, "last client left, closing");
-                channels.close(self.id).await;
-            }
-        }
+    // FIXME: return enum
+    pub fn leave(&mut self, client_id: Uuid) -> bool {
+        self.inner.remove(&client_id);
+        self.live = self.inner.is_empty();
+        self.live
     }
 
     pub async fn list(&self) -> Vec<ClientInfo> {
-        self.present.read().await.values().cloned().collect()
+        self.inner.values().cloned().collect()
     }
 }
 
@@ -264,25 +253,28 @@ impl ChannelEvent {
     }
 }
 
-pub struct ChatRoomJoined<S>
-where
-    S: ChannelState,
-{
-    leave_tx: Option<S>,
+pub struct ChatRoomJoined {
     updates: broadcast::Receiver<ChannelEvent>,
     info: ClientInfo,
+    dropped: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
-impl<S> ChatRoomJoined<S>
-where
-    S: ChannelState,
-{
-    fn new(leave_tx: S, updates: broadcast::Receiver<ChannelEvent>, info: ClientInfo) -> Self {
-        Self {
-            info,
-            updates,
-            leave_tx: Some(leave_tx),
-        }
+impl ChatRoomJoined {
+    // FIXME: second value in the returned tuple is a hack to indicate when keep alive in redis member list
+    // should stop
+    pub fn new(
+        updates: broadcast::Receiver<ChannelEvent>,
+        info: ClientInfo,
+    ) -> (Self, tokio::sync::oneshot::Receiver<()>) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        (
+            Self {
+                info,
+                updates,
+                dropped: Some(tx),
+            },
+            rx,
+        )
     }
 
     pub async fn recv(&mut self) -> Result<ChannelEvent, broadcast::error::RecvError> {
@@ -298,16 +290,8 @@ where
     }
 }
 
-impl<S> Drop for ChatRoomJoined<S>
-where
-    S: ChannelState,
-{
+impl Drop for ChatRoomJoined {
     fn drop(&mut self) {
-        if let Some(tx) = self.leave_tx.take() {
-            let info = self.info.clone();
-            tokio::spawn(async move {
-                let _ = tx.leave(info).await;
-            });
-        }
+        self.dropped.take();
     }
 }

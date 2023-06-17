@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{Future, FutureExt};
@@ -8,14 +9,12 @@ use uuid::Uuid;
 use voice_server::channel::connection::ConnectionState;
 use voices_ws_proto::{ClientEvent, Init, Join, Present};
 
+use crate::channel_registry::ChannelRegistry;
 use crate::server::channels::{ChannelEvent, ChannelEventKind, Channels, ClientInfo};
-use crate::server::voice_instance::OpenConnection;
 use crate::server::ws::ControlStream;
+use crate::voice_instance::{EstablishSession, OpenConnection, VoiceHost};
 
-use super::channel_registry::ChannelRegistry;
-use super::channel_state::ChannelState;
-use super::channels::ChatRoomJoined;
-use super::voice_instance::{EstablishSession, VoiceHost};
+use super::channels::{state::ChannelState, ChatRoomJoined};
 use super::ws::ControlStreamError;
 
 /// Representation of a client session
@@ -23,21 +22,17 @@ use super::ws::ControlStreamError;
 /// Owns a handle to a [`VoiceServer`] and the known [`Channels`].
 ///
 /// Has a [`VoiceHandle`] if the client is currently in a channel.
-pub struct ServerSession<R, S>
-where
-    R: ChannelRegistry,
-    S: ChannelState,
-{
+pub struct ServerSession<R, S> {
     // client info, received in init msg
     client_id: Uuid,
     client_name: String,
     // eventloop / backwards chan
     ctl: ControlStream,
     // optionally connected channel
-    voice: Option<VoiceHandle<R::Voice, S>>,
+    voice: Option<VoiceHandle>,
 
     // channel registry
-    channels: Channels<S, R, R::Voice>,
+    channels: Channels<S, R>,
 }
 
 impl<R, S> ServerSession<R, S>
@@ -51,7 +46,7 @@ where
     #[tracing::instrument(skip_all)]
     pub async fn init(
         ctl: axum::extract::ws::WebSocket,
-        channels: Channels<S, R, R::Voice>,
+        channels: Channels<S, R>,
     ) -> anyhow::Result<Self> {
         let mut ctl = ControlStream::new(ctl);
         tracing::debug!("waiting for handshake");
@@ -176,7 +171,7 @@ where
     pub async fn initialize_voice_connection(
         &mut self,
         channel_id: Uuid,
-    ) -> anyhow::Result<Option<VoiceHandle<R::Voice, S>>> {
+    ) -> anyhow::Result<Option<VoiceHandle>> {
         let mut channel = self.channels.get_or_init(channel_id).await?;
         tracing::debug!("announcing udp");
         // should return source_id
@@ -187,7 +182,7 @@ where
             client_id: self.client_id,
         };
         // FIXME: proper error handling instead of tonic::Status here
-        // FIXME: forbid joining twice - messes up some internal state
+        // FIXME: forbid joining twice, could be solved with server side session ids - messes up some internal state
         let resp = match channel.voice().open_connection(req.clone()).await {
             Ok(o) => o,
             Err(e) => {
@@ -203,12 +198,24 @@ where
         let udp_addr = resp.sock;
         tracing::debug!("udp running on {:?}", udp_addr);
         let source_id = resp.source_id;
+
+        let info = ClientInfo {
+            client_id,
+            source_id,
+            name: self.client_name.clone(),
+        };
+        let room_handle = channel.join(info).await?;
+
         self.ctl.announce_udp(udp_addr, source_id).await?;
         tracing::debug!("announced udp, waiting for client udp addr");
 
         let client_udp = self.ctl.await_client_udp().await?;
         let client_udp = SocketAddr::from((client_udp.ip, client_udp.port));
-        anyhow::ensure!(!client_udp.ip().is_unspecified());
+        anyhow::ensure!(
+            !client_udp.ip().is_unspecified(),
+            "client provided unspecified IP addr: {}",
+            client_udp.ip()
+        );
         tracing::debug!("received client udp addr {client_udp}");
         let request = EstablishSession {
             channel_id,
@@ -225,7 +232,7 @@ where
         };
 
         let crypt_key = base64::encode(resp.crypt_key).into();
-        tracing::debug!("successfully notified udp task");
+        tracing::debug!("established voice session");
 
         let present = match channel.voice().status(channel_id).await {
             Ok(o) => dbg!(o)
@@ -252,25 +259,20 @@ where
         self.ctl.voice_ready(ready).await?;
         let voice_handle = channel.voice().clone();
         let status_handle = status_check(voice_handle.clone(), client_id, channel_id);
-        let info = ClientInfo {
-            client_id,
-            source_id,
-            name: self.client_name.clone(),
-        };
-        let room_handle = channel.join(info).await?;
+
         Ok(Some(VoiceHandle {
             client_id,
             channel_id,
             status_handle,
-            voice_server: voice_handle,
+            voice_host: voice_handle,
             room_handle,
             source_id,
         }))
     }
 }
 
-fn status_check<V: VoiceHost>(
-    voice_handle: V,
+fn status_check(
+    voice_handle: Arc<dyn VoiceHost>,
     client_id: Uuid,
     channel_id: Uuid,
 ) -> tokio::task::JoinHandle<()> {
@@ -311,24 +313,16 @@ fn status_check<V: VoiceHost>(
 }
 
 #[allow(unused)]
-pub struct VoiceHandle<V, S>
-where
-    V: VoiceHost + Clone,
-    S: ChannelState,
-{
+pub struct VoiceHandle {
     client_id: Uuid,
     channel_id: Uuid,
     status_handle: tokio::task::JoinHandle<()>,
-    voice_server: V,
-    room_handle: ChatRoomJoined<S>,
+    voice_host: Arc<dyn VoiceHost>,
+    room_handle: ChatRoomJoined,
     source_id: u32,
 }
 
-impl<V, S> Future for VoiceHandle<V, S>
-where
-    V: VoiceHost + Clone + Unpin,
-    S: ChannelState + Unpin,
-{
+impl Future for VoiceHandle {
     type Output = anyhow::Result<()>;
 
     fn poll(
@@ -339,16 +333,12 @@ where
     }
 }
 
-impl<V, S> Drop for VoiceHandle<V, S>
-where
-    V: VoiceHost + Clone,
-    S: ChannelState,
-{
+impl Drop for VoiceHandle {
     fn drop(&mut self) {
-        let handle = self.voice_server.clone();
+        let voice_host_handle = self.voice_host.clone();
         let channel_id = self.channel_id;
         let client_id = self.client_id;
-        tokio::spawn(async move { handle.leave(channel_id, client_id).await });
+        tokio::spawn(async move { voice_host_handle.leave(channel_id, client_id).await });
         self.status_handle.abort();
     }
 }
