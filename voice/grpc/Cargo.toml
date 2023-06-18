@@ -1,0 +1,33 @@
+[package]
+name = "voices-voice-grpc"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.58"
+async-trait = "0.1.64"
+clap = { version = "3.2.17", features = ["derive", "env"] }
+prost = "0.11.0"
+prost-types = "0.11.0"
+tokio = { version = "1.20.1", features = ["full"] }
+tokio-stream = { version = "0.1.9", features = ["sync", "net"] }
+tonic = { version = "0.8.0", features = ["transport"] }
+tracing = { version = "0.1.36", features = ["log"] }
+tracing-log = "0.1.3"
+tracing-subscriber = { version = "0.3.15", features = ["env-filter"] }
+uuid = { version = "1.1.2", features = ["v4"] }
+voices-voice = { path = "../core" }
+
+[dev-dependencies]
+assert_matches = "1.5.0"
+mockall = "0.11.3"
+tokio = { version = "*", features = ["test-util"] }
+tracing-log = "0.1.3"
+tracing-subscriber = { version = "0.3.15", features = ["env-filter"] }
+voice-proto = { path = "../proto", features = ["server", "client"] }
+
+[build-dependencies]
+anyhow = "1.0.58"
+tonic-build = "0.8"

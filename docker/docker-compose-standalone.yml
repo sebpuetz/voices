@@ -1,0 +1,37 @@
+version: '3'
+services:
+  db:
+    image: "postgres"
+    restart: always
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+    volumes:
+      - ./channels/core/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - channels-dev-db:/var/lib/postgresql/data
+
+  ingress:
+    image: nginx
+    restart: always
+    ports:
+      - 8081:8000
+    volumes:
+      - ./dev-ingress/nginx.conf:/etc/nginx/nginx.conf
+
+  gateway:
+    image: voices/standalone
+    restart: always
+    depends_on:
+      - db
+    environment:
+      - RUST_LOG=DEBUG,h2=WARN,tower=WARN,hyper=WARN
+      - DATABASE_URL=postgres://postgres:password@db:5432/voices_channels
+      - FIRST_UDP_PORT=13333
+      - UDP_PORTS=100
+    command: "standalone --migrate"
+    ports:
+      - "13333-13433:13333-13433/udp"
+
+volumes:
+  channels-dev-db:
+    driver: local

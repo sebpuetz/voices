@@ -71,15 +71,15 @@ where
     }
 
     /// Retrieve the locally running instance of
-    pub async fn get_or_init(&self, id: Uuid) -> anyhow::Result<Channel> {
+    pub async fn get_or_init(&self, id: Uuid) -> anyhow::Result<Option<Channel>> {
         if let Some(room) = self.channel_map.inner.read().await.get(&id) {
-            return Ok(room.clone());
+            return Ok(Some(room.clone()));
         }
-        let voice = self
-            .registry
-            .get_voice_host_for(id, false)
-            .await?
-            .context("no voice server available")?;
+        let voice = self.registry.get_voice_host_for(id, false).await?;
+        let voice = match voice {
+            Some(voice) => voice,
+            None => return Ok(None),
+        };
 
         // FIXME: The channel instance gets a reference to the top level channel map so it can remove itself
         // after it's empty. This is rather hacky since there's a cycle between the channel and that map.
@@ -94,7 +94,7 @@ where
             .entry(id)
             .or_insert(room)
             .clone();
-        Ok(r)
+        Ok(Some(r))
     }
 
     // FIXME: send reassign event

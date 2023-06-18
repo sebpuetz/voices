@@ -1,10 +1,11 @@
 use anyhow::Context;
 use async_trait::async_trait;
+use tonic::Code;
 use uuid::Uuid;
 
 use super::voice_channels_proto::channels_client::ChannelsClient;
 use super::voice_channels_proto::{self, AssignChannelRequest, GetChannelRequest};
-use crate::voice_instance::{RemoteVoiceHost, VoiceHost};
+use crate::voice_instance::{RemoteVoiceHost, VoiceHost, VoiceHostError};
 
 use super::{ChannelRegistry, GetVoiceHost};
 
@@ -36,25 +37,35 @@ impl GetVoiceHost for DistributedChannelRegistry {
         let request = GetChannelRequest {
             channel_id: channel_id.to_string(),
         };
-        let req = self
+        let resp = self
             .channels
             .clone()
             .get_channel(tonic::Request::new(request))
-            .await?
-            .into_inner();
-        match req.voice_server_host {
+            .await
+            .map(|r| r.into_inner());
+        let resp = match resp {
+            Ok(channel) => channel,
+            Err(status) => match status.code() {
+                Code::NotFound => return Ok(None),
+                _ => return Err(status.into()),
+            },
+        };
+        match resp.voice_server_host {
             Some(host) if !reassign => {
                 let client = RemoteVoiceHost::new(
                     host.parse()
                         .context("failed to parse voice server host uri")?,
                 );
-                if let Err(e) = client.status(channel_id).await {
-                    if e.code() == tonic::Code::NotFound {
-                        tracing::info!("voice server lost the channel");
+                match client.status(channel_id).await.map_err(|e| {
+                    tracing::warn!("voice host status check failed: {}", e);
+                    e
+                }) {
+                    Err(VoiceHostError::NotFound(_)) => {
+                        tracing::info!("voice server lost the channel, assigning again");
                         client.assign_channel(channel_id).await?;
-                    } else {
-                        return Err(e.into());
                     }
+                    Err(VoiceHostError::Other(o)) => return Err(o),
+                    _ => (),
                 }
                 return Ok(Some(client));
             }

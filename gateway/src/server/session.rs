@@ -2,17 +2,18 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine;
 use futures_util::{Future, FutureExt};
 use tokio::select;
 use tracing::Instrument;
 use uuid::Uuid;
-use voice_server::channel::connection::ConnectionState;
+use voices_voice_models::ConnectionState;
 use voices_ws_proto::{ClientEvent, Init, Join, Present};
 
 use crate::channel_registry::GetVoiceHost;
 use crate::server::channels::{ChannelEvent, ChannelEventKind, Channels, ClientInfo};
 use crate::server::ws::ControlStream;
-use crate::voice_instance::{EstablishSession, OpenConnection, VoiceHost};
+use crate::voice_instance::{EstablishSession, OpenConnection, VoiceHost, VoiceHostError};
 
 use super::channels::{state::ChannelState, ChatRoomJoined};
 use super::ws::ControlStreamError;
@@ -172,7 +173,13 @@ where
         &mut self,
         channel_id: Uuid,
     ) -> anyhow::Result<Option<VoiceHandle>> {
-        let mut channel = self.channels.get_or_init(channel_id).await?;
+        let mut channel = match self.channels.get_or_init(channel_id).await? {
+            Some(channel) => channel,
+            None => {
+                tracing::info!("channel not found");
+                return Ok(None);
+            }
+        };
         tracing::debug!("announcing udp");
         // should return source_id
         let client_id = self.client_id;
@@ -181,18 +188,24 @@ where
             channel_id,
             client_id: self.client_id,
         };
-        // FIXME: proper error handling instead of tonic::Status here
         // FIXME: forbid joining twice, could be solved with server side session ids - messes up some internal state
-        let resp = match channel.voice().open_connection(req.clone()).await {
+        let resp = match channel
+            .voice()
+            .open_connection(req.clone())
+            .await
+            .map_err(|e| {
+                tracing::warn!("open connection failed: {}", e);
+                e
+            }) {
             Ok(o) => o,
-            Err(e) => {
-                if e.code() == tonic::Code::NotFound {
-                    channel = self.channels.reassign_voice(channel_id).await?;
-                    channel.voice().open_connection(req).await?
-                } else {
-                    tracing::warn!("open conn failed {:?}", e);
-                    return Err(e.into());
-                }
+            Err(VoiceHostError::NotFound(_)) => {
+                tracing::info!("attempting to reassign voice channel");
+                channel = self.channels.reassign_voice(channel_id).await?;
+                channel.voice().open_connection(req).await?
+            }
+            Err(VoiceHostError::Other(o)) => {
+                tracing::error!("aborting voice initialization");
+                return Err(o);
             }
         };
         let udp_addr = resp.sock;
@@ -223,16 +236,24 @@ where
             client_id,
             client_addr: client_udp,
         };
-        let resp = match channel.voice().establish_session(request).await {
+        let resp = match channel
+            .voice()
+            .establish_session(request)
+            .await
+            .map_err(|e| {
+                tracing::warn!("failed to establish session: {}", e);
+                e
+            }) {
             Ok(o) => o,
             Err(e) => {
-                if e.code() == tonic::Code::NotFound {}
-                tracing::warn!("open conn failed {:?}", e);
+                tracing::error!("aborting voice init");
                 return Err(e.into());
             }
         };
 
-        let crypt_key = base64::encode(resp.crypt_key).into();
+        let crypt_key = base64::engine::general_purpose::STANDARD
+            .encode(resp.crypt_key)
+            .into();
         tracing::debug!("established voice session");
 
         let present = present
@@ -278,7 +299,13 @@ fn status_check(
             inter.tick().await;
             loop {
                 inter.tick().await;
-                match voice_handle.user_status(channel_id, client_id).await {
+                match voice_handle
+                    .user_status(channel_id, client_id)
+                    .await
+                    .map_err(|e| {
+                        tracing::warn!("user status check failed: {}", e);
+                        e
+                    }) {
                     Ok(ConnectionState::Peered) => {
                         tracing::trace!("voice connection is in peered state");
                         continue;
@@ -291,14 +318,8 @@ fn status_check(
                         tracing::info!("voice connection stopped");
                         break;
                     }
-                    Err(status) => {
-                        if let tonic::Code::NotFound = status.code() {
-                            tracing::info!("didn't find voice connection");
-                            break;
-                        } else {
-                            tracing::warn!("status request failed");
-                            break;
-                        }
+                    Err(_) => {
+                        break;
                     }
                 }
             }

@@ -14,12 +14,12 @@ fn main() -> anyhow::Result<()> {
         )
         .context("failed to compile channel registry proto")?;
 
-    println!("cargo:rerun-if-changed=../voice-server/service.proto");
+    println!("cargo:rerun-if-changed=../voice/grpc/service.proto");
 
     tonic_build::configure()
         .out_dir("src/voice_instance")
         .build_server(false)
-        .compile(&["../voice-server/service.proto"], &["../voice-server/"])
+        .compile(&["../voice/grpc/service.proto"], &["../voice/grpc/"])
         .context("failed to compile voice server proto")?;
     Ok(())
 }

@@ -106,6 +106,7 @@ pub trait MessageExt {
     }
 }
 
+#[cfg(feature = "client")]
 impl MessageExt for tungstenite::Message {
     fn as_bytes(&self) -> &[u8] {
         match self {
@@ -114,18 +115,6 @@ impl MessageExt for tungstenite::Message {
             Self::Close(None) => &[],
             Self::Close(Some(frame)) => frame.reason.as_bytes(),
             Self::Frame(frame) => frame.payload(),
-        }
-    }
-}
-
-#[cfg(feature = "axum")]
-impl MessageExt for axum::extract::ws::Message {
-    fn as_bytes(&self) -> &[u8] {
-        match self {
-            Self::Text(string) => string.as_bytes(),
-            Self::Binary(data) | Self::Ping(data) | Self::Pong(data) => data,
-            Self::Close(None) => &[],
-            Self::Close(Some(frame)) => frame.reason.as_bytes(),
         }
     }
 }

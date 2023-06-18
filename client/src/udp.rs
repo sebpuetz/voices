@@ -11,8 +11,8 @@ use tokio::time::{timeout, Instant};
 use udp_proto::{UdpError, UdpWithBuf};
 use uuid::Uuid;
 use voice_proto::*;
-use voices_crypto::xsalsa20poly1305::XSalsa20Poly1305;
-use voices_crypto::VoiceCrypto;
+use voices_voice_crypto::xsalsa20poly1305::XSalsa20Poly1305;
+use voices_voice_crypto::VoiceCrypto;
 
 use crate::play::{PlayTx, Player};
 use crate::{mic, play};

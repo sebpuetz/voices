@@ -185,10 +185,7 @@ pub mod channels_server {
         async fn cleanup_stale_voice_servers(
             &self,
             request: tonic::Request<super::CleanupStaleVoiceServersRequest>,
-        ) -> Result<
-            tonic::Response<super::CleanupStaleVoiceServersResponse>,
-            tonic::Status,
-        >;
+        ) -> Result<tonic::Response<super::CleanupStaleVoiceServersResponse>, tonic::Status>;
     }
     #[derive(Debug)]
     pub struct ChannelsServer<T: Channels> {
@@ -209,10 +206,7 @@ pub mod channels_server {
                 send_compression_encodings: Default::default(),
             }
         }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -240,10 +234,7 @@ pub mod channels_server {
         type Response = http::Response<tonic::body::BoxBody>;
         type Error = std::convert::Infallible;
         type Future = BoxFuture<Self::Response, Self::Error>;
-        fn poll_ready(
-            &mut self,
-            _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
+        fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
@@ -252,23 +243,15 @@ pub mod channels_server {
                 "/voice_channels.v1.Channels/CreateServer" => {
                     #[allow(non_camel_case_types)]
                     struct CreateServerSvc<T: Channels>(pub Arc<T>);
-                    impl<
-                        T: Channels,
-                    > tonic::server::UnaryService<super::CreateServerRequest>
-                    for CreateServerSvc<T> {
+                    impl<T: Channels> tonic::server::UnaryService<super::CreateServerRequest> for CreateServerSvc<T> {
                         type Response = super::CreateServerResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::CreateServerRequest>,
                         ) -> Self::Future {
                             let inner = self.0.clone();
-                            let fut = async move {
-                                (*inner).create_server(request).await
-                            };
+                            let fut = async move { (*inner).create_server(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -279,11 +262,10 @@ pub mod channels_server {
                         let inner = inner.0;
                         let method = CreateServerSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            );
+                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
+                            accept_compression_encodings,
+                            send_compression_encodings,
+                        );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -292,15 +274,9 @@ pub mod channels_server {
                 "/voice_channels.v1.Channels/GetServer" => {
                     #[allow(non_camel_case_types)]
                     struct GetServerSvc<T: Channels>(pub Arc<T>);
-                    impl<
-                        T: Channels,
-                    > tonic::server::UnaryService<super::GetServerRequest>
-                    for GetServerSvc<T> {
+                    impl<T: Channels> tonic::server::UnaryService<super::GetServerRequest> for GetServerSvc<T> {
                         type Response = super::GetServerResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::GetServerRequest>,
@@ -317,11 +293,10 @@ pub mod channels_server {
                         let inner = inner.0;
                         let method = GetServerSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            );
+                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
+                            accept_compression_encodings,
+                            send_compression_encodings,
+                        );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -330,15 +305,9 @@ pub mod channels_server {
                 "/voice_channels.v1.Channels/GetServers" => {
                     #[allow(non_camel_case_types)]
                     struct GetServersSvc<T: Channels>(pub Arc<T>);
-                    impl<
-                        T: Channels,
-                    > tonic::server::UnaryService<super::GetServersRequest>
-                    for GetServersSvc<T> {
+                    impl<T: Channels> tonic::server::UnaryService<super::GetServersRequest> for GetServersSvc<T> {
                         type Response = super::GetServersResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::GetServersRequest>,
@@ -355,11 +324,10 @@ pub mod channels_server {
                         let inner = inner.0;
                         let method = GetServersSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            );
+                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
+                            accept_compression_encodings,
+                            send_compression_encodings,
+                        );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -368,23 +336,15 @@ pub mod channels_server {
                 "/voice_channels.v1.Channels/CreateChannel" => {
                     #[allow(non_camel_case_types)]
                     struct CreateChannelSvc<T: Channels>(pub Arc<T>);
-                    impl<
-                        T: Channels,
-                    > tonic::server::UnaryService<super::CreateChannelRequest>
-                    for CreateChannelSvc<T> {
+                    impl<T: Channels> tonic::server::UnaryService<super::CreateChannelRequest> for CreateChannelSvc<T> {
                         type Response = super::CreateChannelResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::CreateChannelRequest>,
                         ) -> Self::Future {
                             let inner = self.0.clone();
-                            let fut = async move {
-                                (*inner).create_channel(request).await
-                            };
+                            let fut = async move { (*inner).create_channel(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -395,11 +355,10 @@ pub mod channels_server {
                         let inner = inner.0;
                         let method = CreateChannelSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            );
+                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
+                            accept_compression_encodings,
+                            send_compression_encodings,
+                        );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -408,15 +367,9 @@ pub mod channels_server {
                 "/voice_channels.v1.Channels/GetChannel" => {
                     #[allow(non_camel_case_types)]
                     struct GetChannelSvc<T: Channels>(pub Arc<T>);
-                    impl<
-                        T: Channels,
-                    > tonic::server::UnaryService<super::GetChannelRequest>
-                    for GetChannelSvc<T> {
+                    impl<T: Channels> tonic::server::UnaryService<super::GetChannelRequest> for GetChannelSvc<T> {
                         type Response = super::GetChannelResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::GetChannelRequest>,
@@ -433,11 +386,10 @@ pub mod channels_server {
                         let inner = inner.0;
                         let method = GetChannelSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            );
+                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
+                            accept_compression_encodings,
+                            send_compression_encodings,
+                        );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -446,23 +398,15 @@ pub mod channels_server {
                 "/voice_channels.v1.Channels/AssignChannel" => {
                     #[allow(non_camel_case_types)]
                     struct AssignChannelSvc<T: Channels>(pub Arc<T>);
-                    impl<
-                        T: Channels,
-                    > tonic::server::UnaryService<super::AssignChannelRequest>
-                    for AssignChannelSvc<T> {
+                    impl<T: Channels> tonic::server::UnaryService<super::AssignChannelRequest> for AssignChannelSvc<T> {
                         type Response = super::AssignChannelResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::AssignChannelRequest>,
                         ) -> Self::Future {
                             let inner = self.0.clone();
-                            let fut = async move {
-                                (*inner).assign_channel(request).await
-                            };
+                            let fut = async move { (*inner).assign_channel(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -473,11 +417,10 @@ pub mod channels_server {
                         let inner = inner.0;
                         let method = AssignChannelSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            );
+                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
+                            accept_compression_encodings,
+                            send_compression_encodings,
+                        );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -486,23 +429,17 @@ pub mod channels_server {
                 "/voice_channels.v1.Channels/UnassignChannel" => {
                     #[allow(non_camel_case_types)]
                     struct UnassignChannelSvc<T: Channels>(pub Arc<T>);
-                    impl<
-                        T: Channels,
-                    > tonic::server::UnaryService<super::UnassignChannelRequest>
-                    for UnassignChannelSvc<T> {
+                    impl<T: Channels> tonic::server::UnaryService<super::UnassignChannelRequest>
+                        for UnassignChannelSvc<T>
+                    {
                         type Response = super::UnassignChannelResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::UnassignChannelRequest>,
                         ) -> Self::Future {
                             let inner = self.0.clone();
-                            let fut = async move {
-                                (*inner).unassign_channel(request).await
-                            };
+                            let fut = async move { (*inner).unassign_channel(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -513,11 +450,10 @@ pub mod channels_server {
                         let inner = inner.0;
                         let method = UnassignChannelSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            );
+                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
+                            accept_compression_encodings,
+                            send_compression_encodings,
+                        );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -526,23 +462,17 @@ pub mod channels_server {
                 "/voice_channels.v1.Channels/RegisterVoiceServer" => {
                     #[allow(non_camel_case_types)]
                     struct RegisterVoiceServerSvc<T: Channels>(pub Arc<T>);
-                    impl<
-                        T: Channels,
-                    > tonic::server::UnaryService<super::RegisterVoiceServerRequest>
-                    for RegisterVoiceServerSvc<T> {
+                    impl<T: Channels> tonic::server::UnaryService<super::RegisterVoiceServerRequest>
+                        for RegisterVoiceServerSvc<T>
+                    {
                         type Response = super::RegisterVoiceServerResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::RegisterVoiceServerRequest>,
                         ) -> Self::Future {
                             let inner = self.0.clone();
-                            let fut = async move {
-                                (*inner).register_voice_server(request).await
-                            };
+                            let fut = async move { (*inner).register_voice_server(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -553,11 +483,10 @@ pub mod channels_server {
                         let inner = inner.0;
                         let method = RegisterVoiceServerSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            );
+                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
+                            accept_compression_encodings,
+                            send_compression_encodings,
+                        );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -566,25 +495,19 @@ pub mod channels_server {
                 "/voice_channels.v1.Channels/CleanupStaleVoiceServers" => {
                     #[allow(non_camel_case_types)]
                     struct CleanupStaleVoiceServersSvc<T: Channels>(pub Arc<T>);
-                    impl<
-                        T: Channels,
-                    > tonic::server::UnaryService<super::CleanupStaleVoiceServersRequest>
-                    for CleanupStaleVoiceServersSvc<T> {
+                    impl<T: Channels>
+                        tonic::server::UnaryService<super::CleanupStaleVoiceServersRequest>
+                        for CleanupStaleVoiceServersSvc<T>
+                    {
                         type Response = super::CleanupStaleVoiceServersResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
-                            request: tonic::Request<
-                                super::CleanupStaleVoiceServersRequest,
-                            >,
+                            request: tonic::Request<super::CleanupStaleVoiceServersRequest>,
                         ) -> Self::Future {
                             let inner = self.0.clone();
-                            let fut = async move {
-                                (*inner).cleanup_stale_voice_servers(request).await
-                            };
+                            let fut =
+                                async move { (*inner).cleanup_stale_voice_servers(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -595,28 +518,23 @@ pub mod channels_server {
                         let inner = inner.0;
                         let method = CleanupStaleVoiceServersSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            );
+                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
+                            accept_compression_encodings,
+                            send_compression_encodings,
+                        );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)
                 }
-                _ => {
-                    Box::pin(async move {
-                        Ok(
-                            http::Response::builder()
-                                .status(200)
-                                .header("grpc-status", "12")
-                                .header("content-type", "application/grpc")
-                                .body(empty_body())
-                                .unwrap(),
-                        )
-                    })
-                }
+                _ => Box::pin(async move {
+                    Ok(http::Response::builder()
+                        .status(200)
+                        .header("grpc-status", "12")
+                        .header("content-type", "application/grpc")
+                        .body(empty_body())
+                        .unwrap())
+                }),
             }
         }
     }

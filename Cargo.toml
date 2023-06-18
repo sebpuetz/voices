@@ -1,12 +1,11 @@
 [workspace]
+resolver = "2"
 members = [
   "./channels/*",
   "./gateway",
   "./ws-proto",
   "./udp-proto",
-  "./voice-proto",
-  "./voice-server",
-  "./voices-crypto",
+  "./voice/*",
 ]
 
 exclude = [

@@ -31,7 +31,10 @@ impl GetVoiceHost for LocalChannelRegistry {
         _reassign: bool,
     ) -> anyhow::Result<Option<Self::Voice>> {
         // ensure channel exists
-        self.channels.get_channel(channel_id).await?;
+        if self.channels.get_channel(channel_id).await?.is_none() {
+            return Ok(None);
+        }
+
         // assign channel to the local voice server
         self.voice.assign_channel(channel_id).await?;
         Ok(Some(self.voice.clone()))
