@@ -5,8 +5,8 @@ use diesel::{Associations, Identifiable, Insertable, Queryable};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::server::Server;
-use super::voice_server::VoiceServer;
+use super::server::ServerDb;
+use super::voice_server::VoiceServerDb;
 use crate::db::DbError;
 use crate::schema::channels;
 
@@ -44,9 +44,9 @@ impl NewChannel {
 #[derive(Clone, Identifiable, Queryable, Selectable, Associations, PartialEq, Debug, Serialize)]
 #[diesel(
     table_name = channels,
-    belongs_to(Server, foreign_key = server_id),
-    belongs_to(VoiceServer, foreign_key = assigned_to))]
-pub struct Channel {
+    belongs_to(ServerDb, foreign_key = server_id),
+    belongs_to(VoiceServerDb, foreign_key = assigned_to))]
+pub struct ChannelDb {
     pub id: Uuid,
     pub server_id: Uuid,
     pub assigned_to: Option<Uuid>,
@@ -54,7 +54,7 @@ pub struct Channel {
     pub updated_at: DateTime<Utc>,
 }
 
-impl Channel {
+impl ChannelDb {
     pub async fn get(id: Uuid, conn: &Pool) -> Result<Option<Self>, DbError> {
         let conn = conn.get().await?;
         let res = conn.interact(move |conn| Self::do_get(conn, id)).await??;

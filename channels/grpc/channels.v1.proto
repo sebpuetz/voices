@@ -77,6 +77,8 @@ message GetChannelResponse {
   string channel_id = 1;
   string name = 2;
   optional string voice_server_host = 3;
+  string server_id = 4;
+  google.protobuf.Timestamp updated_at = 5;
 }
 
 message AssignChannelRequest {

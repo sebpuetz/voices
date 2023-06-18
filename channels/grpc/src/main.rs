@@ -4,8 +4,8 @@ use clap::Parser;
 use tracing::subscriber::set_global_default;
 use tracing_log::LogTracer;
 use tracing_subscriber::layer::SubscriberExt;
-use voices_channels::server::server;
 use voices_channels::ChannelsConfig;
+use voices_channels_grpc::server::server;
 
 #[derive(Debug, Parser)]
 #[clap(name = "voice-channels")]

@@ -1,3 +1,4 @@
+#[cfg(feature = "standalone")]
 pub use integrated::IntegratedVoiceHost;
 #[cfg(feature = "distributed")]
 pub use remote::RemoteVoiceHost;
@@ -6,6 +7,7 @@ pub use voice_server::{
     SessionData,
 };
 
+#[cfg(feature = "standalone")]
 mod integrated;
 #[cfg(feature = "distributed")]
 mod remote;

@@ -7,11 +7,13 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=password
     volumes:
-      - ./channels-internal/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./channels/core/init.sql:/docker-entrypoint-initdb.d/init.sql
       - channels-dev-db:/var/lib/postgresql/data
   redis:
     image: "redis"
     restart: always
+    ports:
+      - 6379:6379
 
   ingress:
     image: nginx
@@ -31,7 +33,7 @@ services:
     image: voices/channels
     deploy:
       replicas: 3
-    command: "./voices-channels --migrate"
+    command: "./voices-channels-grpc --migrate"
 
   gateway:
     image: voices/gateway

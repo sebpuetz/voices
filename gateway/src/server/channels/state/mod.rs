@@ -1,5 +1,7 @@
-pub mod local;
+#[cfg(feature = "distributed")]
 pub mod distributed;
+#[cfg(feature = "standalone")]
+pub mod local;
 
 use async_trait::async_trait;
 

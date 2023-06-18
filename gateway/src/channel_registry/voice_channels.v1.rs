@@ -113,6 +113,10 @@ pub struct GetChannelResponse {
     pub name: ::prost::alloc::string::String,
     #[prost(string, optional, tag = "3")]
     pub voice_server_host: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, tag = "4")]
+    pub server_id: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "5")]
+    pub updated_at: ::core::option::Option<::prost_types::Timestamp>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

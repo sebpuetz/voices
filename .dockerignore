@@ -1,5 +1,6 @@
 .dockerignore
 .gitignore
 target/
+client/
 docker-build.sh
 channels-internal/dev-db

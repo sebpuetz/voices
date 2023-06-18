@@ -18,7 +18,7 @@ COPY --from=planner /app/recipe.json recipe.json
 # Build our project dependencies, not our application!
 RUN cargo chef cook --release --recipe-path recipe.json
 
-FROM rust:1.66.1 AS builder
+FROM rust:1.70.0 AS builder
 WORKDIR /app
 # Copy over the cached dependencies
 COPY --from=cacher /app/target target
@@ -27,4 +27,4 @@ COPY --from=cacher /usr/local/bin/protoc /usr/local/bin/protoc
 COPY --from=cacher /usr/local/include /usr/local/include
 COPY . .
 # Build our application, leveraging the cached deps!
-RUN cargo build --release --workspace
+RUN cargo build --release --workspace --no-default-features --features=distributed

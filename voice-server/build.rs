@@ -1,6 +1,6 @@
 fn main() -> anyhow::Result<()> {
     println!("cargo:rerun-if-changed=./service.proto");
-    println!("cargo:rerun-if-changed=../channels-internal/channels.v1.proto");
+    println!("cargo:rerun-if-changed=../channels/grpc/channels.v1.proto");
     println!("cargo:rerun-if-changed=./build.rs");
     tonic_build::configure()
         .out_dir("src/grpc")
@@ -10,8 +10,8 @@ fn main() -> anyhow::Result<()> {
         .out_dir("src/registry")
         .build_server(false)
         .compile(
-            &["../channels-internal/channels.v1.proto"],
-            &["../channels-internal/"],
+            &["../channels/grpc/channels.v1.proto"],
+            &["../channels/grpc/"],
         )?;
     Ok(())
 }
