@@ -1,22 +1,23 @@
 use async_trait::async_trait;
-use tonic::Status;
 use uuid::Uuid;
-use voice_server::channel::connection::ConnectionState;
+use voices_voice::{
+    EstablishSessionError, LeaveError, OpenConnectionError, StatusError, VoiceServerImpl,
+};
 
-use super::VoiceHost;
+use super::*;
 
 #[derive(Clone)]
 pub struct IntegratedVoiceHost {
-    inner: voice_server::VoiceServerImpl,
+    inner: VoiceServerImpl,
 }
 
 impl IntegratedVoiceHost {
-    pub fn new(inner: voice_server::VoiceServerImpl) -> Self {
+    pub fn new(inner: VoiceServerImpl) -> Self {
         Self { inner }
     }
 
     pub async fn assign_channel(&self, channel_id: Uuid) -> anyhow::Result<()> {
-        self.inner.assign_channel_impl(channel_id).await?;
+        self.inner.assign_channel(channel_id).await?;
         Ok(())
     }
 }
@@ -25,29 +26,71 @@ impl IntegratedVoiceHost {
 impl VoiceHost for IntegratedVoiceHost {
     async fn open_connection(
         &self,
-        request: voice_server::OpenConnection,
-    ) -> Result<voice_server::ConnectionData, Status> {
-        Ok(self.inner.open_connection_impl(request).await?)
+        request: OpenConnection,
+    ) -> Result<ConnectionData, VoiceHostError> {
+        Ok(self.inner.open_connection(request).await?)
     }
 
     async fn establish_session(
         &self,
-        request: voice_server::EstablishSession,
-    ) -> Result<voice_server::SessionData, Status> {
-        Ok(self.inner.establish_session_impl(request).await?)
+        request: EstablishSession,
+    ) -> Result<SessionData, VoiceHostError> {
+        Ok(self.inner.establish_session(request).await?)
     }
-    async fn leave(&self, channel_id: Uuid, client_id: Uuid) -> Result<(), Status> {
-        Ok(self.inner.leave_impl(channel_id, client_id).await?)
+    async fn leave(&self, channel_id: Uuid, client_id: Uuid) -> Result<(), VoiceHostError> {
+        self.inner.leave(channel_id, client_id).await?;
+        Ok(())
     }
 
     async fn user_status(
         &self,
         channel_id: Uuid,
         client_id: Uuid,
-    ) -> Result<ConnectionState, Status> {
-        Ok(self.inner.user_status_impl(channel_id, client_id).await?)
+    ) -> Result<ConnectionState, VoiceHostError> {
+        Ok(self.inner.user_status(channel_id, client_id).await?)
     }
-    async fn status(&self, channel_id: Uuid) -> Result<Vec<voice_server::Peer>, Status> {
-        Ok(self.inner.status_impl(channel_id).await?)
+    async fn status(&self, channel_id: Uuid) -> Result<Vec<Peer>, VoiceHostError> {
+        Ok(self.inner.status(channel_id).await?)
+    }
+}
+
+impl From<OpenConnectionError> for VoiceHostError {
+    fn from(value: OpenConnectionError) -> Self {
+        match value {
+            OpenConnectionError::ChannelNotFound(_) => VoiceHostError::NotFound("channel"),
+            OpenConnectionError::NoOpenPorts => VoiceHostError::Other(
+                anyhow::Error::from(value).context("failed to open connection"),
+            ),
+            OpenConnectionError::Other(o) => VoiceHostError::Other(o),
+        }
+    }
+}
+
+impl From<EstablishSessionError> for VoiceHostError {
+    fn from(value: EstablishSessionError) -> Self {
+        match value {
+            EstablishSessionError::PeerNotFound(_) => VoiceHostError::NotFound("peer"),
+            EstablishSessionError::ChannelNotFound(_) => VoiceHostError::NotFound("channel"),
+            EstablishSessionError::Other(o) => VoiceHostError::Other(o),
+        }
+    }
+}
+
+impl From<LeaveError> for VoiceHostError {
+    fn from(value: LeaveError) -> Self {
+        match value {
+            LeaveError::PeerNotFound(_) => VoiceHostError::NotFound("peer"),
+            LeaveError::ChannelNotFound(_) => VoiceHostError::NotFound("channel"),
+        }
+    }
+}
+
+impl From<StatusError> for VoiceHostError {
+    fn from(value: StatusError) -> Self {
+        match value {
+            StatusError::PeerNotFound(_) => VoiceHostError::NotFound("peer"),
+            StatusError::ChannelNotFound(_) => VoiceHostError::NotFound("channel"),
+            StatusError::Other(o) => VoiceHostError::Other(o),
+        }
     }
 }

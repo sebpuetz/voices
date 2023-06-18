@@ -1,14 +1,14 @@
 use std::net::IpAddr;
 use std::str::FromStr;
 
+use anyhow::Context;
 use async_trait::async_trait;
 use tonic::transport::Channel;
-use tonic::Status;
+use tonic::{Code, Status};
 use uuid::Uuid;
-use voice_server::channel::connection::ConnectionState;
-use voice_server::Peer;
 
 use super::voice_server_proto::{self as proto, voice_server_client::VoiceServerClient};
+use super::*;
 
 #[derive(Clone)]
 pub struct RemoteVoiceHost {
@@ -22,7 +22,7 @@ impl RemoteVoiceHost {
         }
     }
 
-    pub async fn assign_channel(&self, channel_id: Uuid) -> Result<(), tonic::Status> {
+    pub async fn assign_channel(&self, channel_id: Uuid) -> Result<(), Status> {
         self.inner
             .clone()
             .assign_channel(tonic::Request::new(proto::AssignChannelRequest {
@@ -37,20 +37,21 @@ impl RemoteVoiceHost {
 impl super::VoiceHost for RemoteVoiceHost {
     async fn open_connection(
         &self,
-        request: voice_server::OpenConnection,
-    ) -> Result<voice_server::ConnectionData, Status> {
+        request: OpenConnection,
+    ) -> Result<ConnectionData, VoiceHostError> {
         self.inner
             .clone()
             .open_connection(tonic::Request::new(request.into()))
             .await?
             .into_inner()
             .try_into()
+            .map_err(Into::into)
     }
 
     async fn establish_session(
         &self,
-        request: voice_server::EstablishSession,
-    ) -> Result<voice_server::SessionData, Status> {
+        request: EstablishSession,
+    ) -> Result<SessionData, VoiceHostError> {
         Ok(self
             .inner
             .clone()
@@ -60,7 +61,7 @@ impl super::VoiceHost for RemoteVoiceHost {
             .into())
     }
 
-    async fn leave(&self, channel_id: Uuid, client_id: Uuid) -> Result<(), Status> {
+    async fn leave(&self, channel_id: Uuid, client_id: Uuid) -> Result<(), VoiceHostError> {
         self.inner
             .clone()
             .leave(tonic::Request::new(proto::LeaveRequest {
@@ -69,13 +70,14 @@ impl super::VoiceHost for RemoteVoiceHost {
             }))
             .await
             .map(|_| ())
+            .map_err(Into::into)
     }
 
     async fn user_status(
         &self,
         channel_id: Uuid,
         client_id: Uuid,
-    ) -> Result<ConnectionState, Status> {
+    ) -> Result<ConnectionState, VoiceHostError> {
         self.inner
             .clone()
             .user_status(tonic::Request::new(proto::UserStatusRequest {
@@ -85,9 +87,10 @@ impl super::VoiceHost for RemoteVoiceHost {
             .await?
             .into_inner()
             .try_into()
+            .map_err(Into::into)
     }
 
-    async fn status(&self, channel_id: Uuid) -> Result<Vec<voice_server::Peer>, Status> {
+    async fn status(&self, channel_id: Uuid) -> Result<Vec<Peer>, VoiceHostError> {
         self.inner
             .clone()
             .status(tonic::Request::new(proto::StatusRequest {
@@ -96,11 +99,30 @@ impl super::VoiceHost for RemoteVoiceHost {
             .await?
             .into_inner()
             .try_into()
+            .map_err(Into::into)
     }
 }
 
-impl From<voice_server::OpenConnection> for proto::OpenConnectionRequest {
-    fn from(value: voice_server::OpenConnection) -> Self {
+impl From<Status> for VoiceHostError {
+    fn from(value: Status) -> Self {
+        match value.code() {
+            Code::NotFound => {
+                let msg = value.message();
+                if msg.contains("peer") {
+                    VoiceHostError::NotFound("client")
+                } else if msg.contains("channel") {
+                    VoiceHostError::NotFound("channel")
+                } else {
+                    VoiceHostError::NotFound("something")
+                }
+            }
+            _ => VoiceHostError::Other(anyhow::Error::from(value).context("Voice host error")),
+        }
+    }
+}
+
+impl From<OpenConnection> for proto::OpenConnectionRequest {
+    fn from(value: OpenConnection) -> Self {
         proto::OpenConnectionRequest {
             user_name: value.user_name,
             user_id: value.client_id.to_string(),
@@ -109,26 +131,23 @@ impl From<voice_server::OpenConnection> for proto::OpenConnectionRequest {
     }
 }
 
-impl TryFrom<proto::OpenConnectionResponse> for voice_server::ConnectionData {
-    type Error = Status;
-    fn try_from(
-        value: proto::OpenConnectionResponse,
-    ) -> Result<voice_server::ConnectionData, Status> {
+impl TryFrom<proto::OpenConnectionResponse> for ConnectionData {
+    type Error = anyhow::Error;
+    fn try_from(value: proto::OpenConnectionResponse) -> Result<ConnectionData, anyhow::Error> {
         let proto::SockAddr { ip, port } = try_opt(value.udp_sock, "udp_sock")?;
         let ip: IpAddr = parse(&ip, "ip")?;
-        let port = port.try_into().map_err(|_| {
-            tracing::warn!("port out of range: {}", port);
-            tonic::Status::unknown("port out of range")
-        })?;
-        Ok(voice_server::ConnectionData {
+        let port = port
+            .try_into()
+            .with_context(|| format!("port out of range: {}", port))?;
+        Ok(ConnectionData {
             sock: (ip, port).into(),
             source_id: value.src_id,
         })
     }
 }
 
-impl From<voice_server::EstablishSession> for proto::EstablishSessionRequest {
-    fn from(value: voice_server::EstablishSession) -> Self {
+impl From<EstablishSession> for proto::EstablishSessionRequest {
+    fn from(value: EstablishSession) -> Self {
         proto::EstablishSessionRequest {
             user_id: value.client_id.to_string(),
             channel_id: value.channel_id.to_string(),
@@ -140,18 +159,18 @@ impl From<voice_server::EstablishSession> for proto::EstablishSessionRequest {
     }
 }
 
-impl From<proto::EstablishSessionResponse> for voice_server::SessionData {
-    fn from(value: proto::EstablishSessionResponse) -> voice_server::SessionData {
-        voice_server::SessionData {
+impl From<proto::EstablishSessionResponse> for SessionData {
+    fn from(value: proto::EstablishSessionResponse) -> SessionData {
+        SessionData {
             crypt_key: value.crypt_key,
         }
     }
 }
 
 impl TryFrom<proto::StatusResponse> for Vec<Peer> {
-    type Error = Status;
+    type Error = anyhow::Error;
 
-    fn try_from(value: proto::StatusResponse) -> Result<Self, Status> {
+    fn try_from(value: proto::StatusResponse) -> Result<Self, anyhow::Error> {
         value
             .info
             .into_iter()
@@ -168,35 +187,27 @@ impl TryFrom<proto::StatusResponse> for Vec<Peer> {
 }
 
 impl TryFrom<proto::UserStatusResponse> for ConnectionState {
-    type Error = Status;
+    type Error = anyhow::Error;
 
     fn try_from(value: proto::UserStatusResponse) -> Result<Self, Self::Error> {
-        match value.status {
-            Some(proto::user_status_response::Status::Error(())) => Ok(ConnectionState::Stopped),
-            Some(proto::user_status_response::Status::Peered(())) => Ok(ConnectionState::Peered),
-            Some(proto::user_status_response::Status::Waiting(())) => Ok(ConnectionState::Waiting),
-            None => {
-                tracing::warn!("missing connection status field");
-                Err(Status::unknown("didn't receive connection status"))
-            }
+        match try_opt(value.status, "status")? {
+            proto::user_status_response::Status::Error(()) => Ok(ConnectionState::Stopped),
+            proto::user_status_response::Status::Peered(()) => Ok(ConnectionState::Peered),
+            proto::user_status_response::Status::Waiting(()) => Ok(ConnectionState::Waiting),
         }
     }
 }
 
-fn try_opt<T>(value: Option<T>, field_name: &'static str) -> Result<T, Status> {
-    value.ok_or_else(|| {
-        tracing::warn!("missing {}", field_name);
-        Status::unknown(format!("missing {}", field_name))
-    })
+fn try_opt<T>(value: Option<T>, field_name: &'static str) -> Result<T, anyhow::Error> {
+    value.with_context(|| format!("missing {}", field_name))
 }
 
-fn parse<S, E>(value: &str, field_name: &'static str) -> Result<S, Status>
+fn parse<S, E>(value: &str, field_name: &'static str) -> Result<S, anyhow::Error>
 where
     S: FromStr<Err = E>,
-    E: std::fmt::Debug,
+    E: Send + Sync + std::error::Error + 'static,
 {
-    value.parse().map_err(|e| {
-        tracing::warn!(error=?e, "bad {}", field_name);
-        Status::unknown(format!("bad {}", field_name))
-    })
+    value
+        .parse()
+        .with_context(|| format!("bad {}: '{}'", field_name, value))
 }

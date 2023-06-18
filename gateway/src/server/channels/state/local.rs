@@ -55,6 +55,7 @@ impl LocalChannelEvents {
     }
 }
 
+// multiple standalone instances don't propagate channel events and clients don't hear eachother
 #[async_trait]
 impl ChannelState for LocalChannelEvents {
     async fn join(&self, info: ClientInfo) -> anyhow::Result<ChatRoomJoined> {

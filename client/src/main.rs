@@ -5,13 +5,14 @@ mod udp;
 
 use std::net::SocketAddr;
 
+use base64::Engine;
 use clap::Parser;
 use futures_util::FutureExt;
 use tracing::subscriber::set_global_default;
 use tracing_log::LogTracer;
 use tracing_subscriber::prelude::*;
 use uuid::Uuid;
-use voices_crypto::xsalsa20poly1305;
+use voices_voice_crypto::xsalsa20poly1305;
 use voices_ws_proto::client::ControlStream;
 use voices_ws_proto::*;
 use xsalsa20poly1305::KeyInit;
@@ -66,7 +67,7 @@ async fn async_main_() -> anyhow::Result<()> {
         }
     }
     let ready = stream.await_ready().await?;
-    let key = base64::decode(ready.crypt_key.unsecure())?;
+    let key = base64::engine::general_purpose::STANDARD.decode(ready.crypt_key.unsecure())?;
     let cipher = xsalsa20poly1305::XSalsa20Poly1305::new_from_slice(&key)?;
     tracing::info!("{:?}", ready);
     let voice_event_tx = udp.run(ready.src_id, cipher, config.deaf, config.mute)?;

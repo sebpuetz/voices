@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use uuid::Uuid;
 use voices_ws_proto::{
-    ClientAnnounce, ClientEvent, Disconnected, Init, JoinError, Left, MessageExt, Present, Ready,
+    ClientAnnounce, ClientEvent, Disconnected, Init, JoinError, Left, Present, Ready,
     ServerAnnounce, ServerEvent,
 };
 
@@ -193,15 +193,26 @@ impl ControlStreamPriv {
             tracing::debug!("received close");
             return Ok(ControlFlow::Stop);
         }
-        let evt = message
-            .json()
-            .map_err(|e| PrivControlStreamError::deser(message, e))?;
+        let evt =
+            Self::decode_json(&message).map_err(|e| PrivControlStreamError::deser(message, e))?;
         if let ClientEvent::Keepalive(ka) = evt {
             self.send_json(&ServerEvent::Keepalive(ka)).await?;
         } else {
             self.forward.send(evt).await?;
         }
         Ok(ControlFlow::Continue)
+    }
+
+    fn decode_json(message: &axum::extract::ws::Message) -> Result<ClientEvent, serde_json::Error> {
+        let bytes = match message {
+            axum::extract::ws::Message::Text(string) => string.as_bytes(),
+            axum::extract::ws::Message::Binary(data)
+            | axum::extract::ws::Message::Ping(data)
+            | axum::extract::ws::Message::Pong(data) => data,
+            axum::extract::ws::Message::Close(None) => &[],
+            axum::extract::ws::Message::Close(Some(frame)) => frame.reason.as_bytes(),
+        };
+        serde_json::from_slice(bytes)
     }
 
     async fn send_json<V: Serialize>(&mut self, payload: &V) -> Result<(), PrivControlStreamError> {
@@ -223,8 +234,6 @@ enum PrivControlStreamError {
     StreamClosed,
     #[error("stream error: {0}")]
     AxumError(#[from] axum::Error),
-    #[error("stream error: {0}")]
-    StreamError(#[from] tungstenite::Error),
     #[error("deser error: {msg:?}, {src:?}")]
     DeserError {
         msg: axum::extract::ws::Message,

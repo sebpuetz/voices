@@ -59,7 +59,7 @@ enum SetupSubcommand {
     #[cfg(feature = "standalone")]
     Standalone {
         #[clap(flatten)]
-        voice_config: voice_server::config::VoiceServerConfig,
+        voice_config: voices_voice::config::VoiceServerConfig,
         #[clap(flatten)]
         channels_config: voices_channels::ChannelsConfig,
     },
