@@ -1,5 +1,5 @@
-// pub mod rest_api;
 pub mod channel_registry;
+pub mod rest_api;
 pub mod server;
 mod util;
 pub mod voice_instance;
@@ -8,23 +8,34 @@ use std::net::SocketAddr;
 
 use axum::extract::ws::WebSocket;
 use axum::http::{HeaderValue, Method};
+use channel_registry::ChannelRegistry;
 use clap::{CommandFactory, FromArgMatches, Parser};
 // use rest_api::{new_channel, servers};
-use server::session::ServerSession;
 use server::channels::state::ChannelState;
-use server::channels::state::distributed::RedisChannelInitializer;
-use server::channels::state::local::LocalChannelInitializer;
+use server::session::ServerSession;
+#[cfg(feature = "distributed")]
+mod distributed {
+    pub(super) use crate::channel_registry::distributed::DistributedChannelRegistry;
+    pub(super) use crate::server::channels::state::distributed::RedisChannelInitializer;
+}
+#[cfg(feature = "distributed")]
+use distributed::*;
+#[cfg(feature = "standalone")]
+mod standalone {
+    pub(super) use crate::channel_registry::integrated::LocalChannelRegistry;
+    pub(super) use crate::server::channels::state::local::LocalChannelInitializer;
+    pub(super) use crate::voice_instance::IntegratedVoiceHost;
+}
+#[cfg(feature = "standalone")]
+use standalone::*;
 use tokio::net::TcpListener;
 use tracing::subscriber::set_global_default;
 // use tracing::Instrument;
 use tracing_log::LogTracer;
 use tracing_subscriber::prelude::*;
 
-use crate::channel_registry::{
-    distributed::DistributedChannelRegistry, integrated::LocalChannelRegistry, ChannelRegistry,
-};
+use crate::channel_registry::GetVoiceHost;
 use crate::server::channels::Channels;
-use crate::voice_instance::IntegratedVoiceHost;
 
 #[derive(Parser)]
 #[clap(name = "voice-server")]
@@ -38,6 +49,7 @@ struct Config {
 
 #[derive(Debug, Parser)]
 enum SetupSubcommand {
+    #[cfg(feature = "distributed")]
     Distributed {
         #[clap(long, default_value = "http://localhost:33330", env)]
         channels_addr: String,
@@ -70,7 +82,11 @@ async fn main_() -> anyhow::Result<()> {
             .with(tracing_subscriber::EnvFilter::new(
                 std::env::var("RUST_LOG").unwrap_or_else(|_| "INFO".into()),
             ))
-            .with(tracing_subscriber::fmt::layer()),
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_line_number(true)
+                    .with_file(true),
+            ),
     )?;
     LogTracer::init()?;
     let matches = Config::into_app()
@@ -81,6 +97,7 @@ async fn main_() -> anyhow::Result<()> {
     let ctl_listener = tokio::net::TcpListener::bind(tcp_addr).await?;
     tracing::info!("Control listening on {}", ctl_listener.local_addr()?);
     match config.setup {
+        #[cfg(feature = "distributed")]
         SetupSubcommand::Distributed {
             channels_addr,
             redis_conn,
@@ -93,6 +110,7 @@ async fn main_() -> anyhow::Result<()> {
 
             serve(ctl_listener, channels).await
         }
+        #[cfg(feature = "standalone")]
         SetupSubcommand::Standalone {
             voice_config,
             channels_config,
@@ -108,21 +126,21 @@ async fn main_() -> anyhow::Result<()> {
 
 async fn serve<S, R>(ctl_listener: TcpListener, channels: Channels<S, R>) -> anyhow::Result<()>
 where
-    R: ChannelRegistry + Clone,
+    R: GetVoiceHost + ChannelRegistry + Clone,
     S: ChannelState + Clone,
 {
     use tower_http::cors::CorsLayer;
     let router = axum::Router::new()
         .route("/ws", axum::routing::get(websocket_handler))
-        // .route("/channels", axum::routing::post(new_channel))
-        // .route("/channels/:id", axum::routing::get(rest_api::get_channel))
-        // .route("/servers", axum::routing::get(servers))
-        // .route("/servers/:id", axum::routing::get(rest_api::get_server))
-        // .route("/servers", axum::routing::post(rest_api::new_server))
-        // .route(
-        //     "/voice_servers/cleanup",
-        //     axum::routing::post(rest_api::cleanup_stale_voice_servers),
-        // )
+        .route("/channels", axum::routing::post(rest_api::new_channel))
+        .route("/channels/:id", axum::routing::get(rest_api::get_channel))
+        .route("/servers", axum::routing::get(rest_api::servers))
+        .route("/servers/:id", axum::routing::get(rest_api::get_server))
+        .route("/servers", axum::routing::post(rest_api::new_server))
+        .route(
+            "/voice_servers/cleanup",
+            axum::routing::post(rest_api::cleanup_stale_voice_servers),
+        )
         .layer(
             CorsLayer::new()
                 .allow_origin("*".parse::<HeaderValue>().unwrap())
@@ -132,31 +150,10 @@ where
     let srv = axum::Server::from_tcp(ctl_listener.into_std()?)?.serve(router.into_make_service());
     srv.await?;
     Ok(())
-    // loop {
-    //     tracing::debug!("waiting for tcp connection");
-    //     let (inc, addr) = ctl_listener.accept().await?;
-    //     tracing::debug!("accepted tcp connection from {}", addr);
-    //     let channels = channels.clone();
-    //     let span = tracing::span!(tracing::Level::INFO, "session", addr=%addr,);
-    //     tokio::spawn(
-    //         async move {
-    //             if let Err(e) = handle_session(inc, channels).await {
-    //                 tracing::warn!("session ended with error: {}", e);
-    //             } else {
-    //                 tracing::info!("session ended");
-    //             }
-    //         }
-    //         .instrument(span),
-    //     );
-    // }
 }
 
 #[derive(Clone)]
-pub struct AppState<S, R>
-where
-    R: ChannelRegistry,
-    S: ChannelState,
-{
+pub struct AppState<S, R> {
     channels: Channels<S, R>,
 }
 
@@ -165,7 +162,7 @@ async fn websocket_handler<S, R>(
     axum::extract::State(state): axum::extract::State<AppState<S, R>>,
 ) -> impl axum::response::IntoResponse
 where
-    R: ChannelRegistry,
+    R: GetVoiceHost,
     S: ChannelState,
 {
     ws.on_upgrade(|socket| async move {
@@ -179,7 +176,7 @@ where
 
 async fn handle_session<R, S>(socket: WebSocket, channels: Channels<S, R>) -> anyhow::Result<()>
 where
-    R: ChannelRegistry,
+    R: GetVoiceHost,
     S: ChannelState,
 {
     ServerSession::init(socket, channels)

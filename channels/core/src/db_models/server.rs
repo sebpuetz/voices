@@ -12,7 +12,7 @@ use crate::db::DbError;
 use crate::schema::servers::BoxedQuery;
 use crate::schema::*;
 
-use super::channel::Channel;
+use super::channel::ChannelDb;
 
 #[derive(Insertable, Clone)]
 #[diesel(table_name = servers)]
@@ -48,12 +48,12 @@ impl NewServer {
     Clone, PartialEq, Eq, Debug, Selectable, Identifiable, Queryable, Serialize, Deserialize,
 )]
 #[diesel(table_name = servers)]
-pub struct Server {
+pub struct ServerDb {
     pub id: Uuid,
     pub name: String,
 }
 
-impl Server {
+impl ServerDb {
     // pub fn by_name<'a, Db>(q: String) -> BoxedQuery<'a, Db, SqlTypeOf<AsSelect<Server, Db>>>
     // where
     //     Db: Backend + Send,
@@ -83,11 +83,11 @@ impl Server {
         offset: usize,
         limit: usize,
         // conn: &mut PgConnection,
-    ) -> BoxedQuery<'static, Pg, SqlTypeOf<AsSelect<Server, Pg>>> {
+    ) -> BoxedQuery<'static, Pg, SqlTypeOf<AsSelect<ServerDb, Pg>>> {
         Self::all().offset(offset as _).limit(limit as _)
     }
 
-    pub fn all() -> BoxedQuery<'static, Pg, SqlTypeOf<AsSelect<Server, Pg>>> {
+    pub fn all() -> BoxedQuery<'static, Pg, SqlTypeOf<AsSelect<ServerDb, Pg>>> {
         servers::table.select(Self::as_select()).into_boxed()
     }
 
@@ -152,52 +152,54 @@ impl Server {
         Ok(())
     }
 
-    pub async fn get_channels(&self, conn: &Pool) -> Result<Vec<Channel>, DbError> {
+    pub async fn get_channels(&self, conn: &Pool) -> Result<Vec<ChannelDb>, DbError> {
         let conn = conn.get().await?;
         let slf = self.clone();
         let res = conn
-            .interact(move |conn| Channel::belonging_to(&slf).get_results(conn))
+            .interact(move |conn| ChannelDb::belonging_to(&slf).get_results(conn))
             .await??;
         Ok(res)
     }
 }
 
+// FIXME: remove?
+#[cfg(test)]
 #[derive(Clone)]
 pub struct ServerWithChannels {
     // #[diesel(embed)]
-    pub server: Server,
-    pub channels: Vec<Channel>,
+    pub server: ServerDb,
+    pub channels: Vec<ChannelDb>,
 }
-
+#[cfg(test)]
 impl ServerWithChannels {
-    pub fn new(server: Server, channels: Vec<Channel>) -> Self {
-        Self { server, channels }
-    }
+    // pub fn new(server: ServerDb, channels: Vec<ChannelDb>) -> Self {
+    //     Self { server, channels }
+    // }
 
-    pub async fn update(&self, conn: &Pool) -> Result<(), DbError> {
-        let conn = conn.get().await?;
-        let slf = self.clone();
-        conn.interact(move |conn| {
-            conn.transaction(|conn| {
-                {
-                    use crate::schema::servers::dsl::*;
-                    diesel::update(servers.filter(id.eq(slf.server.id)))
-                        .set(name.eq(slf.server.name))
-                        .execute(conn)?;
-                }
-                {
-                    use crate::schema::channels::dsl::*;
-                    for channel in slf.channels {
-                        diesel::update(channels.filter(id.eq(channel.id)))
-                            .set(name.eq(channel.name))
-                            .execute(conn)?;
-                    }
-                }
-                Ok(())
-            })
-        })
-        .await?
-    }
+    // pub async fn update(&self, conn: &Pool) -> Result<(), DbError> {
+    //     let conn = conn.get().await?;
+    //     let slf = self.clone();
+    //     conn.interact(move |conn| {
+    //         conn.transaction(|conn| {
+    //             {
+    //                 use crate::schema::servers::dsl::*;
+    //                 diesel::update(servers.filter(id.eq(slf.server.id)))
+    //                     .set(name.eq(slf.server.name))
+    //                     .execute(conn)?;
+    //             }
+    //             {
+    //                 use crate::schema::channels::dsl::*;
+    //                 for channel in slf.channels {
+    //                     diesel::update(channels.filter(id.eq(channel.id)))
+    //                         .set(name.eq(channel.name))
+    //                         .execute(conn)?;
+    //                 }
+    //             }
+    //             Ok(())
+    //         })
+    //     })
+    //     .await?
+    // }
 
     pub async fn get(server_id: Uuid, conn: &Pool) -> Result<Option<Self>, DbError> {
         let conn = conn.get().await?;
@@ -208,9 +210,9 @@ impl ServerWithChannels {
     }
 
     fn do_get(conn: &mut PgConnection, server_id: Uuid) -> Result<Option<Self>, DbError> {
-        let server = Server::do_get(conn, server_id)?.unwrap();
-        let channels = Channel::belonging_to(&server)
-            .select(Channel::as_select())
+        let server = ServerDb::do_get(conn, server_id)?.unwrap();
+        let channels = ChannelDb::belonging_to(&server)
+            .select(ChannelDb::as_select())
             .load(conn)?;
         Ok(Some(ServerWithChannels { server, channels }))
     }
@@ -223,8 +225,8 @@ mod test {
     use diesel_migrations::{embed_migrations, EmbeddedMigrations};
     use uuid::Uuid;
 
-    use crate::models::channel::NewChannel;
-    use crate::models::server::Server;
+    use crate::db_models::channel::NewChannel;
+    use crate::db_models::server::ServerDb;
     use crate::test_helper::PoolGuard;
 
     use super::{NewServer, ServerWithChannels};
@@ -249,7 +251,7 @@ mod test {
             .unwrap()
             .unwrap();
         assert_eq!(
-            Server {
+            ServerDb {
                 id: server_id,
                 name: "test".into(),
             },
@@ -265,7 +267,7 @@ mod test {
             HashSet::from_iter([channel_id, channel_id2].into_iter())
         );
         let member_id = Uuid::new_v4();
-        Server::join_by_id(server_id, member_id, &conn)
+        ServerDb::join_by_id(server_id, member_id, &conn)
             .await
             .unwrap();
         let members = server.get_members(&conn).await.unwrap();

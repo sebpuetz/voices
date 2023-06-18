@@ -9,7 +9,7 @@ use uuid::Uuid;
 use voice_server::channel::connection::ConnectionState;
 use voices_ws_proto::{ClientEvent, Init, Join, Present};
 
-use crate::channel_registry::ChannelRegistry;
+use crate::channel_registry::GetVoiceHost;
 use crate::server::channels::{ChannelEvent, ChannelEventKind, Channels, ClientInfo};
 use crate::server::ws::ControlStream;
 use crate::voice_instance::{EstablishSession, OpenConnection, VoiceHost};
@@ -37,7 +37,7 @@ pub struct ServerSession<R, S> {
 
 impl<R, S> ServerSession<R, S>
 where
-    R: ChannelRegistry,
+    R: GetVoiceHost,
     S: ChannelState,
 {
     /// Initialize the session on the incoming stream.
@@ -205,6 +205,7 @@ where
             name: self.client_name.clone(),
         };
         let room_handle = channel.join(info).await?;
+        let present = channel.list_members().await?;
 
         self.ctl.announce_udp(udp_addr, source_id).await?;
         tracing::debug!("announced udp, waiting for client udp addr");
@@ -234,26 +235,20 @@ where
         let crypt_key = base64::encode(resp.crypt_key).into();
         tracing::debug!("established voice session");
 
-        let present = match channel.voice().status(channel_id).await {
-            Ok(o) => dbg!(o)
-                .into_iter()
-                .filter_map(|v| {
-                    dbg!((v.id != client_id).then_some(Present {
-                        user: v.name,
-                        source_id: v.source_id,
-                    }))
+        let present = present
+            .into_iter()
+            .filter_map(|v| {
+                (v.client_id != client_id).then_some(Present {
+                    user: v.name,
+                    source_id: v.source_id,
                 })
-                .collect(),
-            Err(e) => {
-                tracing::warn!("list present failed {:?}", e);
-                return Err(e.into());
-            }
-        };
+            })
+            .collect();
 
         let ready = voices_ws_proto::Ready {
             id: channel_id,
             src_id: source_id,
-            present,
+            present: dbg!(present),
             crypt_key,
         };
         self.ctl.voice_ready(ready).await?;

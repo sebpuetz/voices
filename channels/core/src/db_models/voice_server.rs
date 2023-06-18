@@ -42,13 +42,13 @@ impl NewVoiceServer {
 
 #[derive(Clone, PartialEq, Eq, Debug, Selectable, Identifiable, Queryable)]
 #[diesel(table_name = voice_servers)]
-pub struct VoiceServer {
+pub struct VoiceServerDb {
     pub id: Uuid,
     pub host_url: String,
     pub last_seen: DateTime<Utc>,
 }
 
-impl VoiceServer {
+impl VoiceServerDb {
     pub async fn cleanup_stale(
         threshold: chrono::Duration,
         conn: &Pool,

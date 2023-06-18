@@ -5,8 +5,8 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::server::channel_registry::ChannelRegistry;
-use crate::server::channel_state::ChannelState;
+use crate::channel_registry::ChannelRegistry;
+use crate::server::channels::state::ChannelState;
 use crate::AppState;
 
 #[tracing::instrument("get servers", skip(state))]
@@ -17,24 +17,19 @@ where
     S: ChannelState,
     R: ChannelRegistry,
 {
-    let registry = state.channels.registry().registry_handle();
+    let registry = state.channels.registry();
+
     // FIXME: pagination params via API
-    let message = voices_channels::grpc::proto::GetServersRequest {
-        page: None,
-        per_page: None,
-    };
-    let request = tonic::Request::new(message);
-    let resp = registry.get_servers(request).await?.into_inner();
+    let (servers, pages) = registry.get_servers(None, None).await?;
     Ok(Json(GetServersResponse {
-        info: resp
-            .info
+        info: servers
             .into_iter()
             .map(|v| ServerInfo {
-                server_id: v.server_id,
+                server_id: v.id.to_string(),
                 name: v.name,
             })
             .collect(),
-        pages: resp.pages,
+        pages,
     }))
 }
 
@@ -59,15 +54,11 @@ where
     S: ChannelState,
     R: ChannelRegistry,
 {
-    let registry = state.channels.registry().registry_handle();
-    let message = voices_channels::grpc::proto::CreateServerRequest { name: req.name };
-    let request = tonic::Request::new(message);
-    let resp = registry.create_server(request).await?.into_inner();
+    let registry = state.channels.registry();
+    let server_id = registry.create_server(req.name).await?;
     Ok((
         StatusCode::CREATED,
-        Json(CreateServerResponse {
-            server_id: resp.server_id,
-        }),
+        Json(CreateServerResponse { server_id }),
     ))
 }
 
@@ -78,7 +69,7 @@ pub struct CreateServerRequest {
 
 #[derive(Serialize)]
 pub struct CreateServerResponse {
-    server_id: String,
+    server_id: Uuid,
 }
 
 #[tracing::instrument("new channel", skip(state))]
@@ -90,20 +81,19 @@ where
     S: ChannelState,
     R: ChannelRegistry,
 {
-    let registry = state.channels.registry().registry_handle();
-    let message = voices_channels::grpc::proto::GetServerRequest {
-        server_id: id.to_string(),
-    };
-    let request = tonic::Request::new(message);
-    let response = registry.get_server(request).await?.into_inner();
+    let registry = state.channels.registry();
+    let response = registry
+        .get_server(id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound)?;
     Ok(Json(GetServerResponse {
-        server_id: response.server_id,
+        server_id: response.id,
         name: response.name,
         channels: response
             .channels
             .into_iter()
             .map(|v| GetChannelResponse {
-                channel_id: v.channel_id,
+                channel_id: v.id,
                 name: v.name,
             })
             .collect(),
@@ -112,7 +102,7 @@ where
 
 #[derive(Serialize)]
 pub struct GetServerResponse {
-    server_id: String,
+    server_id: Uuid,
     name: String,
     channels: Vec<GetChannelResponse>,
 }
@@ -126,18 +116,14 @@ where
     S: ChannelState,
     R: ChannelRegistry,
 {
-    let registry = state.channels.registry().registry_handle();
-    let message = voices_channels::grpc::proto::CreateChannelRequest {
-        server_id: req.server_id.to_string(),
-        name: req.name,
-    };
-    let request = tonic::Request::new(message);
-    let resp = registry.create_channel(request).await?.into_inner();
+    let registry = state.channels.registry();
+    let channel_id = registry
+        .create_channel(req.server_id, req.name)
+        .await?
+        .ok_or_else(|| ApiError::NotFound)?;
     Ok((
         StatusCode::CREATED,
-        Json(CreateChannelResponse {
-            channel_id: resp.channel_id,
-        }),
+        Json(CreateChannelResponse { channel_id }),
     ))
 }
 
@@ -149,7 +135,7 @@ pub struct CreateChannelRequest {
 
 #[derive(Serialize)]
 pub struct CreateChannelResponse {
-    channel_id: String,
+    channel_id: Uuid,
 }
 
 #[tracing::instrument("new channel", skip(state))]
@@ -161,23 +147,22 @@ where
     S: ChannelState,
     R: ChannelRegistry,
 {
-    let registry = state.channels.registry().registry_handle();
-    let message = voices_channels::grpc::proto::GetChannelRequest {
-        channel_id: id.to_string(),
-    };
-    let request = tonic::Request::new(message);
-    let response = registry.get_channel(request).await?.into_inner();
+    let registry = state.channels.registry();
+    let response = registry
+        .get_channel(id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound)?;
     // FIXME: return who's present here, tricky right now because `get_voice` also initializes a voice server.
     // should change `channels` to provide a listing interface
     Ok(Json(GetChannelResponse {
-        channel_id: response.channel_id,
-        name: response.name,
+        channel_id: response.info.id,
+        name: response.info.name,
     }))
 }
 
 #[derive(Serialize)]
 pub struct GetChannelResponse {
-    channel_id: String,
+    channel_id: Uuid,
     name: String,
 }
 
@@ -188,20 +173,14 @@ where
     S: ChannelState,
     R: ChannelRegistry,
 {
-    let registry = state.channels.registry().registry_handle();
-    let message = voices_channels::grpc::proto::CleanupStaleVoiceServersRequest {};
-    let response = registry
-        .cleanup_stale_voice_servers(tonic::Request::new(message))
-        .await?
-        .into_inner();
-    Ok(Json(CleanupStaleVoiceServersResponse {
-        deleted: response.deleted,
-    }))
+    let registry = state.channels.registry();
+    let deleted = registry.cleanup_stale_voice_servers().await?;
+    Ok(Json(CleanupStaleVoiceServersResponse { deleted }))
 }
 
 #[derive(Serialize)]
 pub struct CleanupStaleVoiceServersResponse {
-    deleted: Vec<String>,
+    deleted: Vec<Uuid>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -218,29 +197,9 @@ pub enum ApiError {
     },
 }
 
-impl From<tonic::Status> for ApiError {
-    fn from(value: tonic::Status) -> Self {
-        match value.code() {
-            tonic::Code::NotFound => ApiError::NotFound,
-            tonic::Code::Ok
-            | tonic::Code::Cancelled
-            | tonic::Code::Unknown
-            | tonic::Code::InvalidArgument
-            | tonic::Code::DeadlineExceeded
-            | tonic::Code::AlreadyExists
-            | tonic::Code::PermissionDenied
-            | tonic::Code::ResourceExhausted
-            | tonic::Code::FailedPrecondition
-            | tonic::Code::Aborted
-            | tonic::Code::OutOfRange
-            | tonic::Code::Unimplemented
-            | tonic::Code::Internal
-            | tonic::Code::Unavailable
-            | tonic::Code::DataLoss
-            | tonic::Code::Unauthenticated => {
-                ApiError::InternalServerError(anyhow::Error::from(value))
-            }
-        }
+impl From<anyhow::Error> for ApiError {
+    fn from(value: anyhow::Error) -> Self {
+        ApiError::InternalServerError(value)
     }
 }
 

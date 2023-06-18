@@ -2,15 +2,15 @@
 fn main() -> anyhow::Result<()> {
     use anyhow::Context;
 
-    println!("cargo:rerun-if-changed=../channels-internal/channels.v1.proto");
+    println!("cargo:rerun-if-changed=../channels/grpc/channels.v1.proto");
     println!("cargo:rerun-if-changed=./build.rs");
 
     tonic_build::configure()
         .out_dir("src/channel_registry")
         .build_server(false)
         .compile(
-            &["../channels-internal/channels.v1.proto"],
-            &["../channels-internal/"],
+            &["../channels/grpc/channels.v1.proto"],
+            &["../channels/grpc/"],
         )
         .context("failed to compile channel registry proto")?;
 

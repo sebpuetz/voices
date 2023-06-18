@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
-use crate::channel_registry::ChannelRegistry;
+use crate::channel_registry::{ChannelRegistry, GetVoiceHost};
 use crate::voice_instance::VoiceHost;
 
 use state::ChannelState;
@@ -55,7 +55,7 @@ impl ChannelMap {
 impl<S, R> Channels<S, R>
 where
     S: ChannelState,
-    R: ChannelRegistry,
+    R: GetVoiceHost,
 {
     pub fn new<F>(room_init: F, registry: R) -> Self
     where
@@ -77,7 +77,7 @@ where
         }
         let voice = self
             .registry
-            .get_voice_host(id, false)
+            .get_voice_host_for(id, false)
             .await?
             .context("no voice server available")?;
 
@@ -101,7 +101,7 @@ where
     pub async fn reassign_voice(&self, channel_id: Uuid) -> anyhow::Result<Channel> {
         let voice = self
             .registry
-            .get_voice_host(channel_id, true)
+            .get_voice_host_for(channel_id, true)
             .await?
             .context("no voice server available")?;
         match self.channel_map.inner.write().await.entry(channel_id) {
@@ -127,7 +127,11 @@ where
             .remove(&channel_id)
             .map(|_| channel_id)
     }
-
+}
+impl<S, R> Channels<S, R>
+where
+    R: ChannelRegistry,
+{
     pub fn registry(&self) -> &R {
         &self.registry
     }
@@ -168,6 +172,10 @@ impl Channel {
     pub fn voice(&self) -> Arc<dyn VoiceHost> {
         self.voice.clone()
     }
+
+    pub async fn list_members(&self) -> anyhow::Result<Vec<ClientInfo>> {
+        self.state.list_members().await
+    }
 }
 
 #[derive(Clone)]
@@ -202,8 +210,8 @@ impl LocallyPresent {
     // FIXME: return enum
     pub fn leave(&mut self, client_id: Uuid) -> bool {
         self.inner.remove(&client_id);
-        self.live = self.inner.is_empty();
-        self.live
+        self.live = !self.inner.is_empty();
+        !self.live
     }
 
     pub async fn list(&self) -> Vec<ClientInfo> {

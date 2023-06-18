@@ -6,11 +6,11 @@ use tokio_stream::wrappers::TcpListenerStream;
 use tower::ServiceBuilder;
 use tower_http::classify::{GrpcCode, GrpcErrorsAsFailures, SharedClassifier};
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
-
-use crate::ChannelsConfig;
+use voices_channels::ChannelsConfig;
 
 pub async fn server(addr: SocketAddr, cfg: ChannelsConfig) -> anyhow::Result<Server> {
-    let service = cfg.server().await?.grpc();
+    tracing::info!("Running channels with {:#?}", cfg);
+    let service = crate::service::ChannelsGrpc::new(&cfg).await?;
 
     let classifier = GrpcErrorsAsFailures::new()
         .with_success(GrpcCode::InvalidArgument)
@@ -21,7 +21,6 @@ pub async fn server(addr: SocketAddr, cfg: ChannelsConfig) -> anyhow::Result<Ser
                 .make_span_with(DefaultMakeSpan::new().include_headers(true)),
         )
         .into_inner();
-    tracing::info!("Running channels with {:#?}", cfg);
     let incoming = TcpListener::bind(addr).await?;
     let local_addr = incoming.local_addr()?;
     tracing::info!("locally listening on {}", local_addr);

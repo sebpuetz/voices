@@ -7,7 +7,7 @@ pushd gateway
 docker build --no-cache -t voices/gateway:latest .
 popd
 
-pushd channels-internal
+pushd channels/grpc
 docker build --no-cache -t voices/channels:latest .
 popd
 

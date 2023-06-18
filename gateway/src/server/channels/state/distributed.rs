@@ -16,7 +16,6 @@ use crate::server::channels::{
 
 use super::ChannelState;
 
-
 // FIXME: Feature gates
 /// Channel event implementation broadcasting over Redis PubSub
 #[derive(Clone)]
@@ -75,8 +74,8 @@ impl ChannelState for RedisChannelEvents {
         tokio::spawn(async move {
             let chan_members_key = slf.chan_members_key();
             let refresh_field = slf.chan_members_last_seen_hash(client_id);
+            let mut refresh_interval = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {
-                let mut refresh_interval = tokio::time::interval(std::time::Duration::from_secs(5));
                 tokio::select! {
                         _ = &mut drop_indicator => {
                             if let Err(e) = slf.leave(info).await {
@@ -119,6 +118,7 @@ impl ChannelState for RedisChannelEvents {
         let mut guard = self.locally_present.write().await;
         let empty = guard.leave(info.client_id);
         if empty {
+            tracing::info!("last local client left");
             if let Some(map) = self.channels.upgrade() {
                 map.close(self.channel_id).await;
             }
@@ -136,9 +136,10 @@ impl ChannelState for RedisChannelEvents {
 
     async fn list_members(&self) -> anyhow::Result<Vec<ClientInfo>> {
         let mut conn = self.pool.get().await?;
-        let resp: Vec<String> = conn.hvals(self.chan_members_key()).await?;
+        let resp: Vec<(String, String)> = conn.hgetall(self.chan_members_key()).await?;
         resp.iter()
-            .map(|s| serde_json::from_str(s))
+            .filter(|v| !v.0.starts_with("last_seen"))
+            .map(|s| serde_json::from_str(&s.1))
             .collect::<Result<Vec<_>, _>>()
             .map_err(anyhow::Error::from)
         // Ok(self.locally_present.read().await.list().await)
@@ -224,14 +225,19 @@ impl RedisEventSource {
         let conn = Self::connect(&self.pool).await?;
         let mut pubsub = conn.into_pubsub();
         pubsub.subscribe(&self.channel_id.to_string()).await?;
+        let mut last_delivered_msg = Utc::now();
         let mut messages = pubsub.on_message();
         // FIXME: reconnect
         while let Some(msg) = messages.next().await {
             let msg = msg.get_payload::<String>()?;
             let evt = serde_json::from_str(&msg)?;
             if self.tx.send(evt).is_err() {
-                tracing::debug!("event source done, no more receivers alive");
-                break;
+                if last_delivered_msg + chrono::Duration::seconds(5) < Utc::now() {
+                    tracing::debug!("event source done, no more receivers alive");
+                    break;
+                }
+            } else {
+                last_delivered_msg = Utc::now();
             }
         }
         drop(messages);
