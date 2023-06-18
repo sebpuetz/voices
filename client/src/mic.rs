@@ -28,7 +28,7 @@ pub fn record(tx: RecordTx) -> anyhow::Result<Stream> {
     config.buffer_size = BufferSize::Fixed(bitrate / 50);
     tracing::debug!("Input config: {:#?}", config);
     let cb = Input::new(config.channels as u32, config.sample_rate.0, tx)?.data_callback();
-    let audio_stream = device.build_input_stream(&config, cb, err_fn)?;
+    let audio_stream = device.build_input_stream(&config, cb, err_fn, None)?;
     audio_stream.play()?;
     Ok(audio_stream)
 }

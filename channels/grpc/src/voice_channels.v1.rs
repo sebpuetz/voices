@@ -153,45 +153,50 @@ pub mod channels_server {
         async fn create_server(
             &self,
             request: tonic::Request<super::CreateServerRequest>,
-        ) -> Result<tonic::Response<super::CreateServerResponse>, tonic::Status>;
+        ) -> std::result::Result<tonic::Response<super::CreateServerResponse>, tonic::Status>;
         async fn get_server(
             &self,
             request: tonic::Request<super::GetServerRequest>,
-        ) -> Result<tonic::Response<super::GetServerResponse>, tonic::Status>;
+        ) -> std::result::Result<tonic::Response<super::GetServerResponse>, tonic::Status>;
         async fn get_servers(
             &self,
             request: tonic::Request<super::GetServersRequest>,
-        ) -> Result<tonic::Response<super::GetServersResponse>, tonic::Status>;
+        ) -> std::result::Result<tonic::Response<super::GetServersResponse>, tonic::Status>;
         async fn create_channel(
             &self,
             request: tonic::Request<super::CreateChannelRequest>,
-        ) -> Result<tonic::Response<super::CreateChannelResponse>, tonic::Status>;
+        ) -> std::result::Result<tonic::Response<super::CreateChannelResponse>, tonic::Status>;
         async fn get_channel(
             &self,
             request: tonic::Request<super::GetChannelRequest>,
-        ) -> Result<tonic::Response<super::GetChannelResponse>, tonic::Status>;
+        ) -> std::result::Result<tonic::Response<super::GetChannelResponse>, tonic::Status>;
         async fn assign_channel(
             &self,
             request: tonic::Request<super::AssignChannelRequest>,
-        ) -> Result<tonic::Response<super::AssignChannelResponse>, tonic::Status>;
+        ) -> std::result::Result<tonic::Response<super::AssignChannelResponse>, tonic::Status>;
         async fn unassign_channel(
             &self,
             request: tonic::Request<super::UnassignChannelRequest>,
-        ) -> Result<tonic::Response<super::UnassignChannelResponse>, tonic::Status>;
+        ) -> std::result::Result<tonic::Response<super::UnassignChannelResponse>, tonic::Status>;
         async fn register_voice_server(
             &self,
             request: tonic::Request<super::RegisterVoiceServerRequest>,
-        ) -> Result<tonic::Response<super::RegisterVoiceServerResponse>, tonic::Status>;
+        ) -> std::result::Result<tonic::Response<super::RegisterVoiceServerResponse>, tonic::Status>;
         async fn cleanup_stale_voice_servers(
             &self,
             request: tonic::Request<super::CleanupStaleVoiceServersRequest>,
-        ) -> Result<tonic::Response<super::CleanupStaleVoiceServersResponse>, tonic::Status>;
+        ) -> std::result::Result<
+            tonic::Response<super::CleanupStaleVoiceServersResponse>,
+            tonic::Status,
+        >;
     }
     #[derive(Debug)]
     pub struct ChannelsServer<T: Channels> {
         inner: _Inner<T>,
         accept_compression_encodings: EnabledCompressionEncodings,
         send_compression_encodings: EnabledCompressionEncodings,
+        max_decoding_message_size: Option<usize>,
+        max_encoding_message_size: Option<usize>,
     }
     struct _Inner<T>(Arc<T>);
     impl<T: Channels> ChannelsServer<T> {
@@ -204,6 +209,8 @@ pub mod channels_server {
                 inner,
                 accept_compression_encodings: Default::default(),
                 send_compression_encodings: Default::default(),
+                max_decoding_message_size: None,
+                max_encoding_message_size: None,
             }
         }
         pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
@@ -224,6 +231,22 @@ pub mod channels_server {
             self.send_compression_encodings.enable(encoding);
             self
         }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.max_decoding_message_size = Some(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.max_encoding_message_size = Some(limit);
+            self
+        }
     }
     impl<T, B> tonic::codegen::Service<http::Request<B>> for ChannelsServer<T>
     where
@@ -234,7 +257,10 @@ pub mod channels_server {
         type Response = http::Response<tonic::body::BoxBody>;
         type Error = std::convert::Infallible;
         type Future = BoxFuture<Self::Response, Self::Error>;
-        fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        fn poll_ready(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
@@ -250,22 +276,29 @@ pub mod channels_server {
                             &mut self,
                             request: tonic::Request<super::CreateServerRequest>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move { (*inner).create_server(request).await };
                             Box::pin(fut)
                         }
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
                         let method = CreateServerSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
-                            accept_compression_encodings,
-                            send_compression_encodings,
-                        );
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -281,22 +314,29 @@ pub mod channels_server {
                             &mut self,
                             request: tonic::Request<super::GetServerRequest>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move { (*inner).get_server(request).await };
                             Box::pin(fut)
                         }
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
                         let method = GetServerSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
-                            accept_compression_encodings,
-                            send_compression_encodings,
-                        );
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -312,22 +352,29 @@ pub mod channels_server {
                             &mut self,
                             request: tonic::Request<super::GetServersRequest>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move { (*inner).get_servers(request).await };
                             Box::pin(fut)
                         }
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
                         let method = GetServersSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
-                            accept_compression_encodings,
-                            send_compression_encodings,
-                        );
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -343,22 +390,29 @@ pub mod channels_server {
                             &mut self,
                             request: tonic::Request<super::CreateChannelRequest>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move { (*inner).create_channel(request).await };
                             Box::pin(fut)
                         }
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
                         let method = CreateChannelSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
-                            accept_compression_encodings,
-                            send_compression_encodings,
-                        );
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -374,22 +428,29 @@ pub mod channels_server {
                             &mut self,
                             request: tonic::Request<super::GetChannelRequest>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move { (*inner).get_channel(request).await };
                             Box::pin(fut)
                         }
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
                         let method = GetChannelSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
-                            accept_compression_encodings,
-                            send_compression_encodings,
-                        );
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -405,22 +466,29 @@ pub mod channels_server {
                             &mut self,
                             request: tonic::Request<super::AssignChannelRequest>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move { (*inner).assign_channel(request).await };
                             Box::pin(fut)
                         }
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
                         let method = AssignChannelSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
-                            accept_compression_encodings,
-                            send_compression_encodings,
-                        );
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -438,22 +506,29 @@ pub mod channels_server {
                             &mut self,
                             request: tonic::Request<super::UnassignChannelRequest>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move { (*inner).unassign_channel(request).await };
                             Box::pin(fut)
                         }
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
                         let method = UnassignChannelSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
-                            accept_compression_encodings,
-                            send_compression_encodings,
-                        );
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -471,22 +546,29 @@ pub mod channels_server {
                             &mut self,
                             request: tonic::Request<super::RegisterVoiceServerRequest>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move { (*inner).register_voice_server(request).await };
                             Box::pin(fut)
                         }
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
                         let method = RegisterVoiceServerSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
-                            accept_compression_encodings,
-                            send_compression_encodings,
-                        );
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -505,7 +587,7 @@ pub mod channels_server {
                             &mut self,
                             request: tonic::Request<super::CleanupStaleVoiceServersRequest>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut =
                                 async move { (*inner).cleanup_stale_voice_servers(request).await };
                             Box::pin(fut)
@@ -513,15 +595,22 @@ pub mod channels_server {
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
                         let method = CleanupStaleVoiceServersSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec).apply_compression_config(
-                            accept_compression_encodings,
-                            send_compression_encodings,
-                        );
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
@@ -545,12 +634,14 @@ pub mod channels_server {
                 inner,
                 accept_compression_encodings: self.accept_compression_encodings,
                 send_compression_encodings: self.send_compression_encodings,
+                max_decoding_message_size: self.max_decoding_message_size,
+                max_encoding_message_size: self.max_encoding_message_size,
             }
         }
     }
     impl<T: Channels> Clone for _Inner<T> {
         fn clone(&self) -> Self {
-            Self(self.0.clone())
+            Self(Arc::clone(&self.0))
         }
     }
     impl<T: std::fmt::Debug> std::fmt::Debug for _Inner<T> {
