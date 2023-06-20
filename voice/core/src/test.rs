@@ -455,7 +455,7 @@ async fn create_srv() -> anyhow::Result<VoiceServerImpl> {
     let voice_cfg = VoiceServerConfig {
         first_udp_port: 0,
         udp_ports: 5,
-        udp_host: "localhost".into(),
+        udp_host: "127.0.0.1".into(),
     };
     voice_cfg.server().await
 }
