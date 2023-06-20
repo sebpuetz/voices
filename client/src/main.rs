@@ -1,3 +1,4 @@
+pub mod channels_api;
 pub mod config;
 pub mod mic;
 mod play;
@@ -28,21 +29,48 @@ fn main() -> anyhow::Result<()> {
             .with(tracing_subscriber::fmt::layer()),
     )?;
     LogTracer::init()?;
-
+    let config = Config::parse();
+    let client = channels_api::Client::new(config.gateway_url.parse()?)?;
+    let servers = client.get_servers()?.info;
+    let Some(srv) = read_choice(servers) else {return Ok(())};
+    let server = client.get_server(srv.server_id)?;
+    let Some(chan) = read_choice(server.channels) else {return Ok(())};
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    rt.block_on(async_main_())
+    rt.block_on(async_main_(config, chan.channel_id))
 }
 
-async fn async_main_() -> anyhow::Result<()> {
-    let config = Config::parse();
+fn read_choice<V: std::fmt::Debug>(mut list: Vec<V>) -> Option<V> {
+    list.iter()
+        .enumerate()
+        .for_each(|(i, it)| println!("{}: {:#?}", i, it));
+    let mut input = String::new();
+    while let Ok(read) = std::io::stdin().read_line(&mut input) {
+        if input.starts_with('q') || input.starts_with('Q') {
+            break;
+        }
+        let stripped_input = input[..read].replace(char::is_whitespace, "");
+        if let Ok(i) = stripped_input.parse::<usize>() {
+            if list.len() > i {
+                return Some(list.remove(i));
+            } else {
+                tracing::info!("list index out of bounds: {}", stripped_input)
+            }
+        } else {
+            tracing::info!("not an integer: {}", stripped_input);
+        }
+        input.clear();
+    }
+    None
+}
+
+async fn async_main_(config: Config, channel_id: Uuid) -> anyhow::Result<()> {
     let (stream, _) = tokio_tungstenite::connect_async(config.ws_endpoint).await?;
     let mut stream = ControlStream::new(stream);
     let user_id = config.client_id.unwrap_or_else(Uuid::new_v4);
     stream.init(user_id, config.name).await?;
 
-    let channel_id = config.room_id.unwrap_or_else(Uuid::new_v4);
     stream.join(channel_id).await?;
     let ServerAnnounce {
         ip,

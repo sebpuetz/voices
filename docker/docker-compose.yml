@@ -7,7 +7,7 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=password
     volumes:
-      - ./channels/core/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ../channels/core/init.sql:/docker-entrypoint-initdb.d/init.sql
       - channels-dev-db:/var/lib/postgresql/data
   redis:
     image: "redis"

@@ -72,9 +72,11 @@ impl ChannelRegistry for LocalChannelRegistry {
         page: Option<i64>,
         per_page: Option<i64>,
     ) -> anyhow::Result<(Vec<voices_channels_models::Server>, i64)> {
-        self.get_servers(page, per_page).await
+        self.channels
+            .get_servers(page.unwrap_or(1), per_page.unwrap_or(100))
+            .await
     }
     async fn cleanup_stale_voice_servers(&self) -> anyhow::Result<Vec<Uuid>> {
-        self.cleanup_stale_voice_servers().await
+        self.channels.cleanup_stale_voice_servers().await
     }
 }
