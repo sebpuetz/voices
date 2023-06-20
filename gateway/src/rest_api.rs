@@ -86,17 +86,24 @@ where
         .get_server(id)
         .await?
         .ok_or_else(|| ApiError::NotFound)?;
+
+    let mut channels = Vec::new();
+    for channel in response.channels {
+        let clients = if let Some(channel) = state.channels.get(channel.id).await {
+            channel.list_members().await?
+        } else {
+            Vec::new()
+        };
+        channels.push(GetChannelResponse {
+            channel_id: channel.id,
+            name: channel.name,
+            present: serde_json::to_value(clients).expect("valid json"),
+        })
+    }
     Ok(Json(GetServerResponse {
         server_id: response.id,
         name: response.name,
-        channels: response
-            .channels
-            .into_iter()
-            .map(|v| GetChannelResponse {
-                channel_id: v.id,
-                name: v.name,
-            })
-            .collect(),
+        channels,
     }))
 }
 
@@ -152,11 +159,18 @@ where
         .get_channel(id)
         .await?
         .ok_or_else(|| ApiError::NotFound)?;
+    let clients = if let Some(channel) = state.channels.get(id).await {
+        channel.list_members().await?
+    } else {
+        Vec::new()
+    };
+
     // FIXME: return who's present here, tricky right now because `get_voice` also initializes a voice server.
     // should change `channels` to provide a listing interface
     Ok(Json(GetChannelResponse {
         channel_id: response.info.id,
         name: response.info.name,
+        present: serde_json::to_value(clients).expect("valid JSON"),
     }))
 }
 
@@ -164,6 +178,8 @@ where
 pub struct GetChannelResponse {
     channel_id: Uuid,
     name: String,
+    // FIXME: proper representation here
+    present: serde_json::Value,
 }
 
 pub async fn cleanup_stale_voice_servers<S, R>(

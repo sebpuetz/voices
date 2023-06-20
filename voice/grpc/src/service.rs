@@ -92,7 +92,6 @@ impl proto::voice_server_server::VoiceServer for VoiceServerGrpc {
         Ok(tonic::Response::new(proto::LeaveResponse {}))
     }
 
-    // FIXME: move logic to VoiceServerImpl
     async fn user_status(
         &self,
         request: tonic::Request<proto::UserStatusRequest>,

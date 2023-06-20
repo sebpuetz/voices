@@ -7,8 +7,8 @@ use uuid::Uuid;
 pub struct Config {
     #[clap(long, default_value = "ws://localhost:33332")]
     pub ws_endpoint: String,
-    #[clap(long)]
-    pub room_id: Option<Uuid>,
+    #[clap(long, default_value = "http://localhost:33332")]
+    pub gateway_url: String,
     #[clap(long)]
     pub client_id: Option<Uuid>,
     #[clap(long, default_value = "Foo")]

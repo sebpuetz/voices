@@ -41,6 +41,12 @@ pub struct Channels<S, R> {
     channel_init: Arc<dyn ChannelInit<ChannelState = S>>,
 }
 
+impl<S, R> Channels<S, R> {
+    pub async fn get(&self, id: Uuid) -> Option<Channel> {
+        self.channel_map.inner.read().await.get(&id).cloned()
+    }
+}
+
 pub struct ChannelMap {
     inner: RwLock<HashMap<Uuid, Channel>>,
 }
@@ -72,7 +78,7 @@ where
 
     /// Retrieve the locally running instance of
     pub async fn get_or_init(&self, id: Uuid) -> anyhow::Result<Option<Channel>> {
-        if let Some(room) = self.channel_map.inner.read().await.get(&id) {
+        if let Some(room) = self.get(id).await {
             return Ok(Some(room.clone()));
         }
         let voice = self.registry.get_voice_host_for(id, false).await?;
