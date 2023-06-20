@@ -1,6 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
+use anyhow::Context;
 use assert_matches::assert_matches;
 use tokio::net::UdpSocket;
 use udp_proto::UdpWithBuf;
@@ -48,7 +49,7 @@ async fn test_conn_open() {
     let client_id = Uuid::new_v4();
     let resp = open(&srv, client_id, chan_id).await;
     assert_matches!(resp, Ok((_, remote_sock)) => {
-            assert_eq!(remote_sock, SocketAddr::from(([127, 0, 0, 1], port)));
+            assert_eq!(remote_sock, SocketAddr::from((srv.host_addr, port)));
         }
     );
     assert_matches!(srv.status(chan_id).await, Ok(status) => {
@@ -105,7 +106,7 @@ async fn test_conn_open_and_ip_disco() {
     let client_id = Uuid::new_v4();
     let (source_id, remote_sock) = open(&srv, client_id, chan_id).await.unwrap();
     let client_ip = Ipv4Addr::LOCALHOST;
-    let client_sock = UdpSocket::bind(SocketAddr::from((client_ip, 0)))
+    let client_sock = UdpSocket::bind(SocketAddr::from((client_ip.to_ipv6_mapped(), 0)))
         .await
         .unwrap();
     let client_addr = client_sock.local_addr().unwrap();
@@ -248,7 +249,11 @@ async fn test_conn_open_send_works() {
     let (source_id1, remote_sock, key) = open_and_establish(&srv, client_id1, chan_id, client_addr)
         .await
         .unwrap();
-    sock1.connect(remote_sock).await.unwrap();
+    sock1
+        .connect(remote_sock)
+        .await
+        .context(remote_sock.to_string())
+        .unwrap();
     let cipher1 = xsalsa20poly1305::XSalsa20Poly1305::new_from_slice(&key).unwrap();
 
     let client_sock = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
