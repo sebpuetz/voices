@@ -1,7 +1,7 @@
 pub mod connection;
 
 use std::collections::BTreeMap;
-use std::net::{Ipv6Addr, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -36,7 +36,7 @@ impl Channel {
         end_notify: mpsc::Sender<Uuid>,
         port: PortRef,
     ) -> anyhow::Result<Self> {
-        let sock_addr = SocketAddr::from((Ipv6Addr::UNSPECIFIED, port.port));
+        let sock_addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port.port));
         let socket = UdpWithBuf::bind(sock_addr).await?;
         let (fwd, channel_ctl) = Forwarder::new(socket, end_notify, room_id);
         tokio::spawn(async move {
