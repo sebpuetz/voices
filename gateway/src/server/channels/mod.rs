@@ -79,7 +79,7 @@ where
     /// Retrieve the locally running instance of
     pub async fn get_or_init(&self, id: Uuid) -> anyhow::Result<Option<Channel>> {
         if let Some(room) = self.get(id).await {
-            return Ok(Some(room.clone()));
+            return Ok(Some(room));
         }
         let voice = self.registry.get_voice_host_for(id, false).await?;
         let voice = match voice {
