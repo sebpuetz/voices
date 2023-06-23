@@ -2284,6 +2284,7 @@ name = "voices-gateway"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "assert_matches",
  "async-trait",
  "axum",
  "base64 0.21.2",
@@ -2294,6 +2295,7 @@ dependencies = [
  "deadpool-redis",
  "dotenvy",
  "futures-util",
+ "mockall",
  "prost",
  "prost-types",
  "rand",

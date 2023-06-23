@@ -48,7 +48,9 @@ distributed = ["deadpool-redis", "redis", "tonic", "prost", "prost-types", "anyh
 standalone = ["voices-channels", "voices-voice"]
 
 [dev-dependencies]
+assert_matches = "1.5.0"
 dotenvy = "0.15.6"
+mockall = "0.11.4"
 
 [build-dependencies]
 anyhow = {version = "1.0.58", optional = true }

@@ -1,82 +1,13 @@
-pub mod channel_registry;
-pub mod rest_api;
-pub mod server;
-mod util;
-pub mod voice_instance;
-
-use std::net::SocketAddr;
-
-use axum::extract::ws::WebSocket;
-use axum::http::{HeaderValue, Method};
-use channel_registry::ChannelRegistry;
-use clap::{CommandFactory, FromArgMatches, Parser};
-// use rest_api::{new_channel, servers};
-use server::channels::state::ChannelState;
-use server::session::ServerSession;
-#[cfg(feature = "distributed")]
-mod distributed {
-    pub(super) use crate::channel_registry::distributed::DistributedChannelRegistry;
-    pub(super) use crate::server::channels::state::distributed::RedisChannelInitializer;
-}
-#[cfg(feature = "distributed")]
-use distributed::*;
-#[cfg(feature = "standalone")]
-mod standalone {
-    pub(super) use crate::channel_registry::integrated::LocalChannelRegistry;
-    pub(super) use crate::server::channels::state::local::LocalChannelInitializer;
-    pub(super) use crate::voice_instance::IntegratedVoiceHost;
-}
-#[cfg(feature = "standalone")]
-use standalone::*;
-use tokio::net::TcpListener;
+use clap::{CommandFactory, FromArgMatches};
 use tracing::subscriber::set_global_default;
-// use tracing::Instrument;
 use tracing_log::LogTracer;
 use tracing_subscriber::prelude::*;
-
-use crate::channel_registry::GetVoiceHost;
-use crate::server::channels::Channels;
-
-#[derive(Parser)]
-#[clap(name = "voice-server")]
-#[clap(author, version, about, long_about = None)]
-struct Config {
-    #[clap(long, default_value_t = 33332, env)]
-    http_listen_port: u16,
-    #[clap(subcommand)]
-    setup: SetupSubcommand,
-}
-
-#[derive(Debug, Parser)]
-enum SetupSubcommand {
-    #[cfg(feature = "distributed")]
-    Distributed {
-        #[clap(long, default_value = "http://localhost:33330", env)]
-        channels_addr: String,
-        #[clap(long, default_value = "redis://127.0.0.1:6379/", env)]
-        redis_conn: String,
-    },
-    #[cfg(feature = "standalone")]
-    Standalone {
-        #[clap(flatten)]
-        voice_config: voices_voice::config::VoiceServerConfig,
-        #[clap(flatten)]
-        channels_config: voices_channels::ChannelsConfig,
-    },
-}
+use voices_gateway::{run, Config};
 
 fn main() -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    rt.block_on(main_()).map_err(|e| {
-        tracing::error!("{}", e);
-        e
-    })?;
-    Ok(())
-}
-
-async fn main_() -> anyhow::Result<()> {
     set_global_default(
         tracing_subscriber::registry()
             .with(tracing_subscriber::EnvFilter::new(
@@ -93,95 +24,9 @@ async fn main_() -> anyhow::Result<()> {
         .dont_collapse_args_in_usage(true)
         .get_matches();
     let config = Config::from_arg_matches(&matches)?;
-    let tcp_addr = SocketAddr::from(([0, 0, 0, 0], config.http_listen_port));
-    let ctl_listener = tokio::net::TcpListener::bind(tcp_addr).await?;
-    tracing::info!("Control listening on {}", ctl_listener.local_addr()?);
-    match config.setup {
-        #[cfg(feature = "distributed")]
-        SetupSubcommand::Distributed {
-            channels_addr,
-            redis_conn,
-        } => {
-            let mgr = deadpool_redis::Manager::new(redis_conn)?;
-            let pool = deadpool_redis::Pool::builder(mgr).build()?;
-            let room_init = RedisChannelInitializer::new(pool);
-            let registry = DistributedChannelRegistry::new(channels_addr.parse()?);
-            let channels = Channels::new(room_init, registry);
-
-            serve(ctl_listener, channels).await
-        }
-        #[cfg(feature = "standalone")]
-        SetupSubcommand::Standalone {
-            voice_config,
-            channels_config,
-        } => {
-            let channels_impl = channels_config.server().await?;
-            let voice = IntegratedVoiceHost::new(voice_config.server().await?);
-            let local_registry = LocalChannelRegistry::new(channels_impl, voice);
-            let channels = Channels::new(LocalChannelInitializer, local_registry);
-            serve(ctl_listener, channels).await
-        }
-    }
-}
-
-async fn serve<S, R>(ctl_listener: TcpListener, channels: Channels<S, R>) -> anyhow::Result<()>
-where
-    R: GetVoiceHost + ChannelRegistry + Clone,
-    S: ChannelState + Clone,
-{
-    use tower_http::cors::CorsLayer;
-    let router = axum::Router::new()
-        .route("/ws", axum::routing::get(websocket_handler))
-        .route("/channels", axum::routing::post(rest_api::new_channel))
-        .route("/channels/:id", axum::routing::get(rest_api::get_channel))
-        .route("/servers", axum::routing::get(rest_api::servers))
-        .route("/servers/:id", axum::routing::get(rest_api::get_server))
-        .route("/servers", axum::routing::post(rest_api::new_server))
-        .route(
-            "/voice_servers/cleanup",
-            axum::routing::post(rest_api::cleanup_stale_voice_servers),
-        )
-        .layer(
-            CorsLayer::new()
-                .allow_origin("*".parse::<HeaderValue>().unwrap())
-                .allow_methods([Method::GET, Method::POST]),
-        )
-        .with_state(AppState { channels });
-    let srv = axum::Server::from_tcp(ctl_listener.into_std()?)?.serve(router.into_make_service());
-    srv.await?;
-    Ok(())
-}
-
-#[derive(Clone)]
-pub struct AppState<S, R> {
-    channels: Channels<S, R>,
-}
-
-async fn websocket_handler<S, R>(
-    ws: axum::extract::ws::WebSocketUpgrade,
-    axum::extract::State(state): axum::extract::State<AppState<S, R>>,
-) -> impl axum::response::IntoResponse
-where
-    R: GetVoiceHost,
-    S: ChannelState,
-{
-    ws.on_upgrade(|socket| async move {
-        if let Err(e) = handle_session(socket, state.channels).await {
-            tracing::warn!("session ended with error: {}", e);
-        } else {
-            tracing::info!("session ended");
-        }
-    })
-}
-
-async fn handle_session<R, S>(socket: WebSocket, channels: Channels<S, R>) -> anyhow::Result<()>
-where
-    R: GetVoiceHost,
-    S: ChannelState,
-{
-    ServerSession::init(socket, channels)
-        .await?
-        .run_session()
-        .await?;
+    rt.block_on(async move { run(config).await }).map_err(|e| {
+        tracing::error!("{}", e);
+        e
+    })?;
     Ok(())
 }

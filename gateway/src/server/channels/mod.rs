@@ -14,11 +14,25 @@ use crate::voice_instance::VoiceHost;
 
 use state::ChannelState;
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct ClientInfo {
     pub client_id: Uuid,
     pub source_id: u32,
     pub name: String,
+}
+
+#[cfg(test)]
+impl ClientInfo {
+    pub fn random() -> Self {
+        use rand::RngCore;
+
+        let client_id = Uuid::new_v4();
+        ClientInfo {
+            client_id,
+            source_id: rand::thread_rng().next_u32(),
+            name: client_id.to_string(),
+        }
+    }
 }
 
 #[async_trait]
@@ -47,6 +61,7 @@ impl<S, R> Channels<S, R> {
     }
 }
 
+#[derive(Default)]
 pub struct ChannelMap {
     inner: RwLock<HashMap<Uuid, Channel>>,
 }
@@ -153,6 +168,16 @@ pub struct Channel {
     voice: Arc<dyn VoiceHost>,
 }
 
+impl std::fmt::Debug for Channel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Channel")
+            .field("room_id", &self.room_id)
+            .field("state", &"")
+            .field("voice", &"")
+            .finish()
+    }
+}
+
 impl Channel {
     pub async fn new<S, V>(id: Uuid, state: S, voice: V) -> anyhow::Result<Self>
     where
@@ -184,7 +209,7 @@ impl Channel {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LocallyPresent {
     inner: HashMap<Uuid, ClientInfo>,
     live: bool,
@@ -227,7 +252,7 @@ impl LocallyPresent {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ChannelEventKind {
-    Joined(String),
+    Joined { name: String },
     Left(String),
 }
 
@@ -243,7 +268,7 @@ impl ChannelEvent {
         Self {
             source,
             source_id,
-            kind: ChannelEventKind::Joined(name),
+            kind: ChannelEventKind::Joined { name },
         }
     }
     pub fn left(source: Uuid, name: String, source_id: u32) -> Self {
@@ -267,6 +292,7 @@ impl ChannelEvent {
     }
 }
 
+#[derive(Debug)]
 pub struct ChatRoomJoined {
     updates: broadcast::Receiver<ChannelEvent>,
     info: ClientInfo,
@@ -307,5 +333,86 @@ impl ChatRoomJoined {
 impl Drop for ChatRoomJoined {
     fn drop(&mut self) {
         self.dropped.take();
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use assert_matches::assert_matches;
+    use uuid::Uuid;
+
+    use crate::channel_registry::MockGetVoiceHost;
+    use crate::server::channels::state::local::LocalChannelInitializer;
+    use crate::server::channels::ChannelEventKind;
+    use crate::server::channels::Channels;
+    use crate::server::channels::ClientInfo;
+    use crate::voice_instance::MockVoiceHost;
+
+    #[tokio::test]
+    async fn test_channels() {
+        let chan_id = Uuid::new_v4();
+        let mut mock_registry = MockGetVoiceHost::new();
+        mock_registry
+            .expect_get_voice_host_for()
+            .returning(|_id, _reassign| {
+                let mut mock = MockVoiceHost::new();
+                mock.expect_status().returning(|_id| Ok(Vec::new()));
+                Ok(Some(mock))
+            });
+        let channels = Channels::new(LocalChannelInitializer, mock_registry);
+        assert_matches!(channels.get(chan_id).await, None);
+        let channel = channels.get_or_init(chan_id).await;
+        let channel = assert_matches!(channel, Ok(Some(channel)) => {
+            channel
+        });
+        assert_matches!(channels.get(chan_id).await, Some(chan) => {
+            assert_eq!(chan.room_id, chan_id)
+        });
+
+        assert_eq!(channel.room_id, chan_id);
+        assert_matches!(channel.list_members().await, Ok(present) => {
+            assert_eq!(present, vec![]);
+        });
+        let info = ClientInfo::random();
+        let joined = channel.join(info.clone()).await;
+        let mut joined = assert_matches!(joined, Ok(mut joined) => {
+            assert_matches!(channel.list_members().await, Ok(present) => {
+                assert_eq!(present, vec![info.clone()]);
+            });
+            let evt = joined.recv().await;
+            assert_matches!(evt, Ok(evt) => {
+                assert_matches!(evt.kind(), ChannelEventKind::Joined { name } => {
+                    assert_eq!(&info.name, name);
+                })
+            });
+            joined
+        });
+
+        let info2 = ClientInfo::random();
+        let second_handle = channel.join(info2.clone()).await;
+        let second_handle = assert_matches!(second_handle, Ok(second) => {
+            assert_matches!(channel.list_members().await, Ok(_) => {
+                // assert_eq!(present, vec![info2.clone(), info.clone()]); FIXME: stable ordering
+            });
+            let evt = joined.recv().await;
+            assert_matches!(evt, Ok(evt) => {
+                assert_matches!(evt.kind(), ChannelEventKind::Joined { name } => {
+                    assert_eq!(&info2.name, name);
+                })
+            });
+            second
+        });
+
+        drop(second_handle);
+        let evt = joined.recv().await;
+        assert_matches!(evt, Ok(evt) => {
+            assert_matches!(evt.kind(), ChannelEventKind::Left(name) => {
+                assert_eq!(&info2.name, name);
+            })
+        });
+
+        drop(joined);
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert_matches!(channels.get(chan_id).await, None);
     }
 }

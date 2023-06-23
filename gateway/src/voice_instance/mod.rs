@@ -17,6 +17,7 @@ mod voice_server_proto;
 use async_trait::async_trait;
 use uuid::Uuid;
 
+#[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait VoiceHost: Send + Sync + 'static {
     async fn open_connection(

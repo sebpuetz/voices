@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::voice_instance::VoiceHost;
 
+#[cfg_attr(test, mockall::automock(type Voice=crate::voice_instance::MockVoiceHost;))]
 #[async_trait]
 pub trait GetVoiceHost: Send + Sync + 'static {
     type Voice: VoiceHost;
