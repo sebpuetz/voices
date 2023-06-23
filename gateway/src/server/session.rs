@@ -109,7 +109,7 @@ where
         }
         let source_id = chan_event.source_id();
         match chan_event.kind() {
-            ChannelEventKind::Joined(joined) => {
+            ChannelEventKind::Joined { name: joined } => {
                 self.ctl.joined(joined.into(), source_id).await?;
             }
             ChannelEventKind::Left(left) => {
