@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use uuid::Uuid;
 use voices_ws_proto::{
-    ClientAnnounce, ClientEvent, Disconnected, Init, JoinError, Left, Present, Ready,
+    ClientAnnounce, ClientEvent, Disconnected, Init, Initialized, JoinError, Left, Present, Ready,
     ServerAnnounce, ServerEvent,
 };
 
@@ -22,7 +22,11 @@ pub struct ControlStream {
 }
 
 impl ControlStream {
-    pub fn new(ws: axum::extract::ws::WebSocket) -> Self {
+    pub fn new(inc: mpsc::Receiver<ClientEvent>, out: mpsc::Sender<ServerEvent>) -> Self {
+        Self { inc, out }
+    }
+
+    pub fn from_websocket(ws: axum::extract::ws::WebSocket) -> Self {
         let (forward_tx, forward_rx) = mpsc::channel(10);
         let (backward_tx, backward_rx) = mpsc::channel(10);
         tokio::spawn(async move {
@@ -36,10 +40,7 @@ impl ControlStream {
                 }
             }
         });
-        Self {
-            inc: forward_rx,
-            out: backward_tx,
-        }
+        Self::new(forward_rx, backward_tx)
     }
 
     async fn send(&self, evt: ServerEvent) -> Result<(), ControlStreamError> {
@@ -47,6 +48,11 @@ impl ControlStream {
             .send(evt)
             .await
             .map_err(|_| ControlStreamError::DeadReceiver)
+    }
+
+    pub async fn initialized(&self, session_id: Uuid) -> Result<(), ControlStreamError> {
+        self.send(ServerEvent::Init(Initialized { session_id }))
+            .await
     }
 
     pub async fn announce_udp(

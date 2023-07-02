@@ -70,7 +70,7 @@ async fn async_main_(config: Config, channel_id: Uuid) -> anyhow::Result<()> {
     let mut stream = ControlStream::new(stream);
     let user_id = config.client_id.unwrap_or_else(Uuid::new_v4);
     stream.init(user_id, config.name).await?;
-
+    let _ = dbg!(stream.await_initialized().await?);
     stream.join(channel_id).await?;
     let ServerAnnounce {
         ip,
@@ -116,9 +116,10 @@ async fn async_main_(config: Config, channel_id: Uuid) -> anyhow::Result<()> {
             }
         };
         match evt? {
-            ServerEvent::Keepalive(_) | ServerEvent::Ready(_) | ServerEvent::UdpAnnounce(_) => {
-                continue
-            }
+            ServerEvent::Keepalive(_)
+            | ServerEvent::Init(_)
+            | ServerEvent::Ready(_)
+            | ServerEvent::UdpAnnounce(_) => continue,
             ServerEvent::JoinError(err) => {
                 tracing::info!("Failed to join: {:?}", err);
                 stream.stop().await?;

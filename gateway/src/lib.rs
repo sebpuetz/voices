@@ -147,7 +147,7 @@ where
     R: GetVoiceHost,
     S: ChannelState,
 {
-    ServerSession::init(socket, channels)
+    ServerSession::init_websocket(socket, channels)
         .await?
         .run_session()
         .await?;

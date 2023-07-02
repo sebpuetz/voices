@@ -24,6 +24,7 @@ use super::ws::ControlStreamError;
 ///
 /// Has a [`VoiceHandle`] if the client is currently in a channel.
 pub struct ServerSession<R, S> {
+    session_id: Uuid,
     // client info, received in init msg
     client_id: Uuid,
     client_name: String,
@@ -36,6 +37,19 @@ pub struct ServerSession<R, S> {
     channels: Channels<S, R>,
 }
 
+impl<R: std::fmt::Debug, S: std::fmt::Debug> std::fmt::Debug for ServerSession<R, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerSession")
+            .field("session_id", &self.session_id)
+            .field("client_id", &self.client_id)
+            .field("client_name", &self.client_name)
+            .field("ctl", &"{CONTROL_STREAM}")
+            .field("voice", &self.voice)
+            .field("channels", &"{CHANNELS}")
+            .finish()
+    }
+}
+
 impl<R, S> ServerSession<R, S>
 where
     R: GetVoiceHost,
@@ -44,28 +58,57 @@ where
     /// Initialize the session on the incoming stream.
     ///
     /// Waits for the client handshake.
+    // FIXME: Tests with a mocked ControlStream, internally just mpsc Sender & Receiver
     #[tracing::instrument(skip_all)]
-    pub async fn init(
+    pub async fn init_websocket(
         ctl: axum::extract::ws::WebSocket,
         channels: Channels<S, R>,
     ) -> anyhow::Result<Self> {
-        let mut ctl = ControlStream::new(ctl);
+        Self::init(ControlStream::from_websocket(ctl), channels).await
+    }
+
+    #[cfg(test)]
+    async fn new_with_timeout(
+        control: ControlStream,
+        channels: Channels<S, R>,
+    ) -> anyhow::Result<Self> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            Self::init(control, channels),
+        )
+        .await?
+    }
+
+    async fn init(mut ctl: ControlStream, channels: Channels<S, R>) -> anyhow::Result<Self> {
         tracing::debug!("waiting for handshake");
         let Init { user_id, name } = ctl.await_handshake().await?;
+        let session_id = Uuid::new_v4();
+        ctl.initialized(session_id).await?;
         tracing::debug!("handshake succesful: {}", user_id);
-        Ok(Self {
+        Ok(Self::new(session_id, user_id, name, ctl, channels))
+    }
+
+    fn new(
+        session_id: Uuid,
+        client_id: Uuid,
+        client_name: String,
+        ctl: ControlStream,
+        channels: Channels<S, R>,
+    ) -> Self {
+        Self {
+            session_id,
+            client_id,
+            client_name,
             ctl,
-            client_id: user_id,
-            client_name: name,
-            channels,
             voice: None,
-        })
+            channels,
+        }
     }
 
     /// Run the client session to completion.
     ///
     /// Tracks the status of the optional voice connection and related channel events as well as client events.
-    #[tracing::instrument(skip(self), fields(client_id=%self.client_id, name=&self.client_name))]
+    #[tracing::instrument(skip(self), fields(client_id=%self.client_id, name=&self.client_name, session_id=%self.session_id))]
     pub async fn run_session(mut self) -> anyhow::Result<()> {
         tracing::info!("session running");
         loop {
@@ -328,7 +371,6 @@ fn status_check(
     )
 }
 
-#[allow(unused)]
 pub struct VoiceHandle {
     client_id: Uuid,
     channel_id: Uuid,
@@ -336,6 +378,19 @@ pub struct VoiceHandle {
     voice_host: Arc<dyn VoiceHost>,
     room_handle: ChatRoomJoined,
     source_id: u32,
+}
+
+impl std::fmt::Debug for VoiceHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VoiceHandle")
+            .field("client_id", &self.client_id)
+            .field("channel_id", &self.channel_id)
+            .field("status_handle", &self.status_handle)
+            .field("voice_host", &"{VOICE_HOST}")
+            .field("room_handle", &self.room_handle)
+            .field("source_id", &self.source_id)
+            .finish()
+    }
 }
 
 impl Future for VoiceHandle {
@@ -356,5 +411,117 @@ impl Drop for VoiceHandle {
         let client_id = self.client_id;
         tokio::spawn(async move { voice_host_handle.leave(channel_id, client_id).await });
         self.status_handle.abort();
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use assert_matches::assert_matches;
+    use tokio::sync::mpsc;
+    use uuid::Uuid;
+    use voices_voice_models::ConnectionData;
+    use voices_ws_proto::ClientEvent;
+
+    use crate::channel_registry::happy_mocked_get_voice_host;
+    use crate::server::channels::state::local::LocalChannelInitializer;
+    use crate::server::channels::Channels;
+    use crate::server::ws::ControlStream;
+    use crate::voice_instance::MockVoiceHost;
+
+    #[tokio::test(start_paused = true)]
+    async fn test_init() -> anyhow::Result<()> {
+        let (client_tx, server_rx) = mpsc::channel(100);
+        let (server_tx, mut client_rx) = mpsc::channel(100);
+        let user_id = Uuid::new_v4();
+        let name = "test";
+        let control = ControlStream::new(server_rx, server_tx);
+        let _ = client_tx
+            .send(ClientEvent::Init(voices_ws_proto::Init {
+                user_id,
+                name: name.into(),
+            }))
+            .await;
+        let mock_registry = happy_mocked_get_voice_host(|| MockVoiceHost::new());
+        let channels = Channels::new(LocalChannelInitializer, mock_registry);
+        let session = super::ServerSession::new_with_timeout(control, channels).await?;
+        let response = client_rx.recv().await;
+
+        assert_matches!(
+            response,
+            Some(voices_ws_proto::ServerEvent::Init(
+                voices_ws_proto::Initialized { session_id }
+            )) => {
+                assert_eq!(session.session_id, session_id)
+            }
+        );
+        assert_eq!(user_id, session.client_id);
+        assert_eq!(name, session.client_name);
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_init_unhappy() -> anyhow::Result<()> {
+        let (client_tx, server_rx) = mpsc::channel(100);
+        let (server_tx, mut client_rx) = mpsc::channel(100);
+        let control = ControlStream::new(server_rx, server_tx);
+        let _ = client_tx
+            .send(ClientEvent::Join(voices_ws_proto::Join {
+                channel_id: Uuid::new_v4(),
+            }))
+            .await;
+        let mock_registry = happy_mocked_get_voice_host(|| MockVoiceHost::new());
+        let channels = Channels::new(LocalChannelInitializer, mock_registry);
+        let session = super::ServerSession::new_with_timeout(control, channels).await;
+        assert_matches!(session, Err(_));
+        assert_matches!(client_rx.recv().await, None);
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_join() -> anyhow::Result<()> {
+        let (client_tx, server_rx) = mpsc::channel(100);
+        let (server_tx, mut client_rx) = mpsc::channel(100);
+        let user_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        let name = "test";
+        let control = ControlStream::new(server_rx, server_tx);
+        let sock = ([127, 0, 0, 1], 0).into();
+        let exp_source_id = 0;
+        let mock_registry = happy_mocked_get_voice_host(move || {
+            let mut mock = MockVoiceHost::new();
+            mock.expect_open_connection().returning(move |_req| {
+                Ok(ConnectionData {
+                    sock,
+                    source_id: exp_source_id,
+                })
+            });
+            mock
+        });
+        let channels = Channels::new(LocalChannelInitializer, mock_registry);
+        let session =
+            super::ServerSession::new(session_id, user_id, name.into(), control, channels);
+        tokio::spawn(session.run_session());
+
+        client_tx
+            .send(ClientEvent::Join(voices_ws_proto::Join {
+                channel_id: Uuid::new_v4(),
+            }))
+            .await?;
+        let resp = client_rx.recv().await;
+        assert_matches!(
+            resp,
+            Some(voices_ws_proto::ServerEvent::UdpAnnounce(
+                voices_ws_proto::ServerAnnounce {
+                    ip,
+                    port,
+                    source_id
+                }
+            )) => {
+                assert_eq!(ip, sock.ip());
+                assert_eq!(port, sock.port());
+                assert_eq!(exp_source_id, source_id)
+            }
+        );
+        Ok(())
     }
 }
