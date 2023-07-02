@@ -43,3 +43,15 @@ pub trait ChannelRegistry {
     ) -> anyhow::Result<(Vec<voices_channels_models::Server>, i64)>;
     async fn cleanup_stale_voice_servers(&self) -> anyhow::Result<Vec<Uuid>>;
 }
+
+#[cfg(test)]
+pub fn happy_mocked_get_voice_host<F>(voice_host: F) -> MockGetVoiceHost
+where
+    F: Send + Sync + Fn() -> crate::voice_instance::MockVoiceHost + 'static,
+{
+    let mut mock_registry = MockGetVoiceHost::new();
+    mock_registry
+        .expect_get_voice_host_for()
+        .returning(move |_id, _reassign| Ok(Some((voice_host)())));
+    mock_registry
+}

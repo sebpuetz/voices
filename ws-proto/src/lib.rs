@@ -59,6 +59,7 @@ pub struct Join {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type")]
 pub enum ServerEvent {
+    Init(Initialized),
     Keepalive(Keepalive),
     Ready(Ready),
     Joined(Present),
@@ -66,6 +67,11 @@ pub enum ServerEvent {
     Left(Left),
     UdpAnnounce(ServerAnnounce),
     JoinError(JoinError),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Initialized {
+    pub session_id: Uuid,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

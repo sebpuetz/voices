@@ -53,6 +53,16 @@ impl ControlStream {
         self.send(ClientEvent::Init(Init { user_id, name })).await
     }
 
+    pub async fn await_initialized(&mut self) -> Result<Initialized, ControlStreamError> {
+        match self.next_event().await? {
+            ServerEvent::Init(init) => Ok(init),
+            evt => Err(ControlStreamError::UnexpectedMessage {
+                expected: "Initialized",
+                got: evt,
+            }),
+        }
+    }
+
     pub async fn announce_udp(&self, socket: SocketAddr) -> Result<(), ControlStreamError> {
         self.send(ClientEvent::UdpAnnounce(ClientAnnounce {
             ip: socket.ip(),

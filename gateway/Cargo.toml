@@ -51,6 +51,7 @@ standalone = ["voices-channels", "voices-voice"]
 assert_matches = "1.5.0"
 dotenvy = "0.15.6"
 mockall = "0.11.4"
+tokio = { version = "1.20.1", features = ["test-util"] }
 
 [build-dependencies]
 anyhow = {version = "1.0.58", optional = true }
