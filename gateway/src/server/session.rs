@@ -170,6 +170,7 @@ where
                 return Ok(());
             }
             ClientEvent::Disconnect => {
+                tracing::info!("received disconnect");
                 self.stop_voice().await;
                 return Ok(());
             }
@@ -301,11 +302,9 @@ where
 
         let present = present
             .into_iter()
-            .filter_map(|v| {
-                (v.client_id != client_id).then_some(Present {
-                    user: v.name,
-                    source_id: v.source_id,
-                })
+            .map(|v| Present {
+                user: v.name,
+                source_id: v.source_id,
             })
             .collect();
 
@@ -416,35 +415,39 @@ impl Drop for VoiceHandle {
 
 #[cfg(test)]
 mod test {
+    use std::net::SocketAddr;
+
     use assert_matches::assert_matches;
+    use base64::Engine;
     use tokio::sync::mpsc;
     use uuid::Uuid;
-    use voices_voice_models::ConnectionData;
-    use voices_ws_proto::ClientEvent;
+    use voices_voice_models::{ConnectionData, ConnectionState, SessionData};
+    use voices_ws_proto::{ClientEvent, JoinError, Ready, ServerEvent};
 
-    use crate::channel_registry::happy_mocked_get_voice_host;
-    use crate::server::channels::state::local::LocalChannelInitializer;
+    use crate::channel_registry::{
+        happy_mocked_get_voice_host, MockGetVoiceHost, MAGIC_NOT_FOUND_CHANNEL,
+    };
+    use crate::server::channels::state::local::{LocalChannelEvents, LocalChannelInitializer};
     use crate::server::channels::Channels;
     use crate::server::ws::ControlStream;
     use crate::voice_instance::MockVoiceHost;
 
     #[tokio::test(start_paused = true)]
     async fn test_init() -> anyhow::Result<()> {
-        let (client_tx, server_rx) = mpsc::channel(100);
-        let (server_tx, mut client_rx) = mpsc::channel(100);
+        crate::test_log();
+        let (control, mut client) = testable_control_stream();
         let user_id = Uuid::new_v4();
         let name = "test";
-        let control = ControlStream::new(server_rx, server_tx);
-        let _ = client_tx
+        let _ = client
             .send(ClientEvent::Init(voices_ws_proto::Init {
                 user_id,
                 name: name.into(),
             }))
             .await;
-        let mock_registry = happy_mocked_get_voice_host(|| MockVoiceHost::new());
+        let mock_registry = happy_mocked_get_voice_host(MockVoiceHost::new);
         let channels = Channels::new(LocalChannelInitializer, mock_registry);
         let session = super::ServerSession::new_with_timeout(control, channels).await?;
-        let response = client_rx.recv().await;
+        let response = client.recv().await;
 
         assert_matches!(
             response,
@@ -461,67 +464,196 @@ mod test {
 
     #[tokio::test(start_paused = true)]
     async fn test_init_unhappy() -> anyhow::Result<()> {
-        let (client_tx, server_rx) = mpsc::channel(100);
-        let (server_tx, mut client_rx) = mpsc::channel(100);
-        let control = ControlStream::new(server_rx, server_tx);
-        let _ = client_tx
+        crate::test_log();
+        let (control, mut client) = testable_control_stream();
+
+        let _ = client
             .send(ClientEvent::Join(voices_ws_proto::Join {
                 channel_id: Uuid::new_v4(),
             }))
             .await;
-        let mock_registry = happy_mocked_get_voice_host(|| MockVoiceHost::new());
+        let mock_registry = happy_mocked_get_voice_host(MockVoiceHost::new);
         let channels = Channels::new(LocalChannelInitializer, mock_registry);
         let session = super::ServerSession::new_with_timeout(control, channels).await;
         assert_matches!(session, Err(_));
-        assert_matches!(client_rx.recv().await, None);
+        assert_matches!(client.recv().await, None);
         Ok(())
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_join() -> anyhow::Result<()> {
-        let (client_tx, server_rx) = mpsc::channel(100);
-        let (server_tx, mut client_rx) = mpsc::channel(100);
-        let user_id = Uuid::new_v4();
-        let session_id = Uuid::new_v4();
-        let name = "test";
-        let control = ControlStream::new(server_rx, server_tx);
-        let sock = ([127, 0, 0, 1], 0).into();
+    async fn test_happy_session_lifecycle() -> anyhow::Result<()> {
+        crate::test_log();
+        let exp_remote_sock = ([127, 0, 0, 1], 0).into();
         let exp_source_id = 0;
         let mock_registry = happy_mocked_get_voice_host(move || {
-            let mut mock = MockVoiceHost::new();
-            mock.expect_open_connection().returning(move |_req| {
-                Ok(ConnectionData {
-                    sock,
-                    source_id: exp_source_id,
-                })
-            });
-            mock
+            happy_mocked_voice_host(exp_remote_sock, exp_source_id)
         });
-        let channels = Channels::new(LocalChannelInitializer, mock_registry);
-        let session =
-            super::ServerSession::new(session_id, user_id, name.into(), control, channels);
-        tokio::spawn(session.run_session());
 
-        client_tx
-            .send(ClientEvent::Join(voices_ws_proto::Join {
-                channel_id: Uuid::new_v4(),
+        let (mut client, session) = testable_session(mock_registry);
+        let name = session.client_name.clone();
+        let handle = tokio::spawn(session.run_session());
+        let exp_channel_id = Uuid::new_v4();
+        client
+            .join_and_await_udp_announce(exp_channel_id, exp_source_id, exp_remote_sock)
+            .await?;
+        let Ready {
+            id,
+            src_id,
+            present,
+            crypt_key,
+        } = client.announce_udp_and_await_ready().await?;
+
+        assert_eq!(exp_channel_id, id);
+        assert_eq!(exp_source_id, src_id);
+        assert_eq!(
+            vec![voices_ws_proto::Present {
+                user: name,
+                source_id: exp_source_id,
+            }],
+            present
+        );
+        let expected_key = base64::engine::general_purpose::STANDARD.encode("MOCK KEY");
+        assert_eq!(crypt_key.unsecure(), expected_key);
+
+        client.disconnect_and_await_disconnected().await?;
+        drop(client);
+        handle.await??;
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_join_channel_not_found() -> anyhow::Result<()> {
+        crate::test_log();
+        let mock_registry = happy_mocked_get_voice_host(MockVoiceHost::new);
+
+        let (mut client, session) = testable_session(mock_registry);
+        let handle = tokio::spawn(session.run_session());
+        client.join(MAGIC_NOT_FOUND_CHANNEL).await?;
+        let resp = client.recv().await;
+        assert_matches!(resp, Some(ServerEvent::JoinError(JoinError { room_id })) => {
+            assert_eq!(MAGIC_NOT_FOUND_CHANNEL, room_id);
+        });
+        drop(client);
+        handle.await??;
+        Ok(())
+    }
+
+    fn happy_mocked_voice_host(remote_sock: SocketAddr, source_id: u32) -> MockVoiceHost {
+        let mut mock = MockVoiceHost::new();
+        mock.expect_open_connection().returning(move |_req| {
+            Ok(ConnectionData {
+                sock: remote_sock,
+                source_id,
+            })
+        });
+        mock.expect_establish_session().returning(move |_req| {
+            Ok(SessionData {
+                crypt_key: "MOCK KEY".into(),
+            })
+        });
+        mock.expect_user_status()
+            .returning(move |_, _| Ok(ConnectionState::Peered));
+        mock
+    }
+
+    struct TestClient {
+        tx: mpsc::Sender<ClientEvent>,
+        rx: mpsc::Receiver<ServerEvent>,
+    }
+
+    impl TestClient {
+        pub async fn send(
+            &self,
+            value: ClientEvent,
+        ) -> Result<(), mpsc::error::SendError<ClientEvent>> {
+            self.tx.send(value).await
+        }
+
+        pub async fn recv(&mut self) -> Option<ServerEvent> {
+            tokio::time::timeout(std::time::Duration::from_secs(1), self.rx.recv())
+                .await
+                .expect("receive timed out")
+        }
+
+        pub async fn join_and_await_udp_announce(
+            &mut self,
+            exp_channel_id: Uuid,
+            exp_source_id: u32,
+            exp_remote_sock: SocketAddr,
+        ) -> anyhow::Result<()> {
+            self.join(exp_channel_id).await?;
+            let resp = self.recv().await;
+            assert_matches!(
+                resp,
+                Some(voices_ws_proto::ServerEvent::UdpAnnounce(
+                    voices_ws_proto::ServerAnnounce {
+                        ip,
+                        port,
+                        source_id
+                    }
+                )) => {
+                    assert_eq!(exp_remote_sock.ip(), ip);
+                    assert_eq!(exp_remote_sock.port(), port);
+                    assert_eq!(exp_source_id, source_id)
+                }
+            );
+            Ok(())
+        }
+
+        pub async fn join(&self, channel_id: Uuid) -> anyhow::Result<()> {
+            self.send(ClientEvent::Join(voices_ws_proto::Join { channel_id }))
+                .await?;
+            Ok(())
+        }
+
+        pub async fn announce_udp_and_await_ready(&mut self) -> anyhow::Result<Ready> {
+            self.send(ClientEvent::UdpAnnounce(voices_ws_proto::ClientAnnounce {
+                ip: [127, 0, 0, 1].into(),
+                port: 0,
             }))
             .await?;
-        let resp = client_rx.recv().await;
-        assert_matches!(
-            resp,
-            Some(voices_ws_proto::ServerEvent::UdpAnnounce(
-                voices_ws_proto::ServerAnnounce {
-                    ip,
-                    port,
-                    source_id
-                }
-            )) => {
-                assert_eq!(ip, sock.ip());
-                assert_eq!(port, sock.port());
-                assert_eq!(exp_source_id, source_id)
-            }
-        );
-        Ok(())
+            let resp = self.recv().await;
+            assert_matches!(resp, Some(ServerEvent::Ready(ready)) => Ok(ready))
+        }
+
+        pub async fn disconnect_and_await_disconnected(&mut self) -> anyhow::Result<()> {
+            self.send(ClientEvent::Disconnect).await?;
+            let resp = self.recv().await;
+            assert_matches!(
+                resp,
+                Some(voices_ws_proto::ServerEvent::Disconnected(
+                    voices_ws_proto::Disconnected {}
+                ))
+            );
+            Ok(())
+        }
+    }
+
+    fn testable_control_stream() -> (ControlStream, TestClient) {
+        let (client_tx, server_rx) = mpsc::channel(100);
+        let (server_tx, client_rx) = mpsc::channel(100);
+        let control = ControlStream::new(server_rx, server_tx);
+        (
+            control,
+            TestClient {
+                tx: client_tx,
+                rx: client_rx,
+            },
+        )
+    }
+
+    fn testable_session(
+        mock_registry: MockGetVoiceHost,
+    ) -> (
+        TestClient,
+        super::ServerSession<MockGetVoiceHost, LocalChannelEvents>,
+    ) {
+        let (ctl, client) = testable_control_stream();
+        let user_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        let name = format!("test-{}", user_id);
+        let channels = Channels::new(LocalChannelInitializer, mock_registry);
+        let session = super::ServerSession::new(session_id, user_id, name, ctl, channels);
+        (client, session)
     }
 }

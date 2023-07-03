@@ -45,13 +45,30 @@ pub trait ChannelRegistry {
 }
 
 #[cfg(test)]
-pub fn happy_mocked_get_voice_host<F>(voice_host: F) -> MockGetVoiceHost
-where
-    F: Send + Sync + Fn() -> crate::voice_instance::MockVoiceHost + 'static,
-{
-    let mut mock_registry = MockGetVoiceHost::new();
-    mock_registry
-        .expect_get_voice_host_for()
-        .returning(move |_id, _reassign| Ok(Some((voice_host)())));
-    mock_registry
+mod test_helpers {
+    use uuid::Uuid;
+
+    use super::MockGetVoiceHost;
+
+    pub const MAGIC_NOT_FOUND_CHANNEL: Uuid = Uuid::from_u128(42);
+
+    pub fn happy_mocked_get_voice_host<F>(voice_host: F) -> MockGetVoiceHost
+    where
+        F: Send + Sync + Fn() -> crate::voice_instance::MockVoiceHost + 'static,
+    {
+        let mut mock_registry = MockGetVoiceHost::new();
+        mock_registry
+            .expect_get_voice_host_for()
+            .returning(move |id, _reassign| {
+                if id == MAGIC_NOT_FOUND_CHANNEL {
+                    Ok(None)
+                } else {
+                    Ok(Some((voice_host)()))
+                }
+            });
+        mock_registry
+    }
 }
+
+#[cfg(test)]
+pub use test_helpers::*;
