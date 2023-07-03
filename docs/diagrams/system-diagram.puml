@@ -1,0 +1,14 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+' uncomment the following line and comment the first to use locally
+' !include C4_Context.puml
+
+LAYOUT_WITH_LEGEND()
+
+title System Context diagram for Internet Banking System
+
+Person(user, "Voice Chat User")
+System(voice_chat, "Voice Chat", "Allows voice chat users to communicate")
+
+Rel(user, voice_chat, "Uses")
+@enduml

@@ -1,0 +1,35 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+' uncomment the following line and comment the first to use locally
+' !include C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Component diagram for Voices - Distributed API Application
+
+Container(client, "Client Application", "Windows / Linux", "Desktop application to use Voices.")
+ContainerDb(channels_db, "Channels Database", "Postgres", "Channels and Server Registry")
+
+Container_Boundary(api, "Distributed Voice Chat Backend") {
+    Component(gateway, "Gateway", "Service, WebSocket and REST API", "Allows users to join channels and manage channels and servers")
+    Component(channels, "Channel Registry", "Service, gRPC", "Management Service for Channels and Servers")
+    Component(voice, "Voice Host", "Service, UDP, gRPC", "Hosting Server for Voice Channels")
+    
+    Rel(gateway, channels, "Uses")
+    Rel(voice, channels, "Pings")
+    Rel(gateway, voice, "Manages")
+    Rel(channels, channels_db, "Read & write to", "diesel")
+}
+
+Container_Boundary(channel_state, "Redis") {
+    ContainerDb(state, "Channel State", "Redis", "track presence")
+    Container(pubsub, "State Events", "Redis", "Real time channel events")
+}
+Rel(gateway, pubsub, "Subscribes to")
+Rel(gateway, state, "Maintains & Reads")
+
+
+Rel(client, gateway, "Uses", "JSON/HTTPS, WebSockets")
+Rel(client, voice, "Uses", "protobuf/UDP")
+
+@enduml

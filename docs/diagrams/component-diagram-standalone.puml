@@ -1,0 +1,27 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+' uncomment the following line and comment the first to use locally
+' !include C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Component diagram for Voices - Standalone API Application
+
+Container(client, "Client Application", "Windows / Linux", "Desktop application to use Voices.")
+ContainerDb(channels_db, "Channels Database", "Postgres", "Channels and Server Registry")
+
+Container_Boundary(api, "Standalone Voice Chat Backend") {
+    Component( standalone, "Standalone", "WebSocket, REST API, protobuf/UDP") {
+        Component(gateway, "Gateway",  "JSON/HTTPS, WebSockets", "Allows users to join channels and manage channels and servers.")
+        Component(voice, "Voice", "protobuf/UDP, internal", "Receive and forward voice streams")
+        Component(channels, "Channels", "internal", "Channels and server registry")
+        Rel(gateway, voice, "wraps")
+        Rel(gateway, channels, "wraps")
+    }
+
+    Rel(channels, channels_db, "Read & write to", "diesel")
+}
+
+Rel(client, standalone, "Uses", "JSON/HTTPS, WebSockets, protobuf/UDP")
+
+@enduml
