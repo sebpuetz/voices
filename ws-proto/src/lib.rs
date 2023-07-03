@@ -86,7 +86,7 @@ pub struct Ready {
     pub crypt_key: secstr::SecUtf8,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct Present {
     pub user: String,
     pub source_id: u32,

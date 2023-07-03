@@ -100,6 +100,9 @@ async fn async_main_(config: Config, channel_id: Uuid) -> anyhow::Result<()> {
     tracing::info!("{:?}", ready);
     let voice_event_tx = udp.run(ready.src_id, cipher, config.deaf, config.mute)?;
     for user in ready.present {
+        if user.source_id == ready.src_id {
+            continue;
+        }
         tracing::info!("{:?}", user);
         voice_event_tx.already_present(user.source_id).await;
     }

@@ -153,3 +153,22 @@ where
         .await?;
     Ok(())
 }
+
+#[cfg(test)]
+fn test_log() {
+    use tracing_subscriber::prelude::*;
+    if std::env::var("TEST_LOG").is_ok() {
+        let _ = tracing::subscriber::set_global_default(
+            tracing_subscriber::registry()
+                .with(tracing_subscriber::EnvFilter::new(
+                    std::env::var("RUST_LOG").unwrap_or_else(|_| "INFO".into()),
+                ))
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .with_line_number(true)
+                        .with_file(true),
+                ),
+        );
+        let _ = tracing_log::LogTracer::init();
+    }
+}
