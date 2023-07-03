@@ -1,0 +1,96 @@
+@startuml join-sequence
+
+skinparam responseMessageBelowArrow true
+
+actor "Client A" as Client
+actor "Client B" as B
+participant Gateway
+participant ChannelState
+box
+participant VoiceServer as Voice
+participant VoiceChannel
+participant VoiceConnection
+end box
+participant ChannelsRegistry as Channels
+
+Voice -> Channels: Heartbeat
+activate Voice
+Channels --> Voice: Ack
+autonumber
+Client -> Gateway: Init
+activate Gateway
+Gateway -> Gateway: Generate Session ID
+Gateway --> Client: Initialized
+
+Client -> Gateway: Join Channel
+Gateway -> Gateway: Get Local Channel
+
+opt initialize local channel
+Gateway -> Channels: Get Channel Voice Host
+Channels --> Gateway: Channel
+Gateway -> Voice: Get Channel Status
+Voice -> VoiceChannel: Get Status
+VoiceChannel --> Voice: Status
+Voice --> Gateway: Channel Status
+
+opt not running
+Gateway -> Channels: Reassign Channel
+Channels --> Gateway: New Host
+Gateway -> Voice: Assign Channel
+Voice -> VoiceChannel: Initialize
+activate VoiceChannel
+VoiceChannel -> VoiceChannel: Open UDP
+VoiceChannel --> Voice: Initialized Channel
+end
+end
+loop
+VoiceChannel -> VoiceChannel: Broadcast voice
+end
+
+Gateway -> Voice: Open Connection
+note right of Gateway: error recovery omitted
+Voice -> VoiceChannel: New Connection
+VoiceChannel -> VoiceConnection: start
+activate VoiceConnection #DarkBlue
+VoiceConnection --> VoiceChannel: src_id
+VoiceChannel --> Voice: src_id
+Voice -> Gateway: ConnectionData
+Gateway -> ChannelState: Join
+ChannelState --> Gateway: Broadcast Joined
+loop heartbeat
+Gateway -> ChannelState: refresh membership
+end
+Gateway --> B: B Joined
+Gateway -> ChannelState: List Members
+ChannelState --> Gateway: Present
+Gateway --> Client: UdpAnnounce
+
+opt IpDiscovery
+  Client -> Voice: IpDiscovery
+  Voice -> VoiceConnection: Check src_id
+  VoiceConnection --> Voice
+  Voice --> Client: IpDiscoveryResponse
+end
+
+Client -> Gateway: ClientUdpAnnounce
+Gateway -> VoiceConnection: Establish Session
+activate VoiceConnection #LightBlue
+VoiceConnection --> VoiceConnection: Peer with Client
+VoiceConnection --> Gateway: SessionData
+Gateway --> Client: Ready
+
+loop voice_status_check
+Gateway -> VoiceConnection: User Status Check
+VoiceConnection --> Gateway: User Status
+end
+
+loop 
+  Client -> VoiceChannel: Ping & Voice
+  VoiceChannel -> Client: Voice
+end
+
+loop 
+  B -> VoiceChannel: Ping & Voice
+  VoiceChannel -> B: Voice
+end
+@enduml

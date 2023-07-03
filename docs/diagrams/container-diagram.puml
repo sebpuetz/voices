@@ -1,0 +1,27 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+' uncomment the following line and comment the first to use locally
+' !include C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title Container diagram for Voices
+
+Person(a, "User", "Using Desktop Computer")
+
+System_Boundary(voice_chat, "Voice Chat") {
+    Container(client, "Client Application", "Rust, Windows / Linux", "Desktop application to use Voices.")
+    Container(backend, "Voice Chat Backend", "Rust", "Allows to join and control voice sessions, provides backends to manage servers and channels, send & receive voice")
+    ContainerDb(channels_db, "Channels Database", "Postgres", "Channels and Server Registry")
+    Container(channel_state, "State Events", "Redis", "Real time channel events")
+    
+    Container(channel_state, "K/V Store and Pub/Sub", "Redis", "Real time channel events and channel state persistence")
+    Rel(backend, channel_state, "Subscribes to and maintains")
+}
+Rel(client, backend, "API calls / websocket", "JSON/HTTPS, WebSocket")
+Rel(client, backend, "Send and receive voice streams", "protobuf/gRPC")
+Rel(backend, channels_db, "Read & write to", "SQL/TCP")
+
+Rel(a, client, "Uses")
+
+@enduml
