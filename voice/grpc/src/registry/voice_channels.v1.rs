@@ -146,8 +146,8 @@ pub struct UnassignChannelResponse {}
 /// Generated client implementations.
 pub mod channels_client {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
-    use tonic::codegen::http::Uri;
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     #[derive(Debug, Clone)]
     pub struct ChannelsClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -191,8 +191,9 @@ pub mod channels_client {
                     <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<http::Request<tonic::body::BoxBody>>>::Error:
-                Into<StdError> + Send + Sync,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::BoxBody>,
+            >>::Error: Into<StdError> + Send + Sync,
         {
             ChannelsClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -230,37 +231,48 @@ pub mod channels_client {
         pub async fn create_server(
             &mut self,
             request: impl tonic::IntoRequest<super::CreateServerRequest>,
-        ) -> std::result::Result<tonic::Response<super::CreateServerResponse>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {}", e.into()),
-                )
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::CreateServerResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/voice_channels.v1.Channels/CreateServer");
+            let path = http::uri::PathAndQuery::from_static(
+                "/voice_channels.v1.Channels/CreateServer",
+            );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "voice_channels.v1.Channels",
-                "CreateServer",
-            ));
+            req.extensions_mut()
+                .insert(GrpcMethod::new("voice_channels.v1.Channels", "CreateServer"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn get_server(
             &mut self,
             request: impl tonic::IntoRequest<super::GetServerRequest>,
-        ) -> std::result::Result<tonic::Response<super::GetServerResponse>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {}", e.into()),
-                )
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::GetServerResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/voice_channels.v1.Channels/GetServer");
+            let path = http::uri::PathAndQuery::from_static(
+                "/voice_channels.v1.Channels/GetServer",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("voice_channels.v1.Channels", "GetServer"));
@@ -269,17 +281,23 @@ pub mod channels_client {
         pub async fn get_servers(
             &mut self,
             request: impl tonic::IntoRequest<super::GetServersRequest>,
-        ) -> std::result::Result<tonic::Response<super::GetServersResponse>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {}", e.into()),
-                )
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::GetServersResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/voice_channels.v1.Channels/GetServers");
+            let path = http::uri::PathAndQuery::from_static(
+                "/voice_channels.v1.Channels/GetServers",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("voice_channels.v1.Channels", "GetServers"));
@@ -288,38 +306,48 @@ pub mod channels_client {
         pub async fn create_channel(
             &mut self,
             request: impl tonic::IntoRequest<super::CreateChannelRequest>,
-        ) -> std::result::Result<tonic::Response<super::CreateChannelResponse>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {}", e.into()),
-                )
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::CreateChannelResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/voice_channels.v1.Channels/CreateChannel");
+            let path = http::uri::PathAndQuery::from_static(
+                "/voice_channels.v1.Channels/CreateChannel",
+            );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "voice_channels.v1.Channels",
-                "CreateChannel",
-            ));
+            req.extensions_mut()
+                .insert(GrpcMethod::new("voice_channels.v1.Channels", "CreateChannel"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn get_channel(
             &mut self,
             request: impl tonic::IntoRequest<super::GetChannelRequest>,
-        ) -> std::result::Result<tonic::Response<super::GetChannelResponse>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {}", e.into()),
-                )
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::GetChannelResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/voice_channels.v1.Channels/GetChannel");
+            let path = http::uri::PathAndQuery::from_static(
+                "/voice_channels.v1.Channels/GetChannel",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("voice_channels.v1.Channels", "GetChannel"));
@@ -328,65 +356,80 @@ pub mod channels_client {
         pub async fn assign_channel(
             &mut self,
             request: impl tonic::IntoRequest<super::AssignChannelRequest>,
-        ) -> std::result::Result<tonic::Response<super::AssignChannelResponse>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {}", e.into()),
-                )
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::AssignChannelResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/voice_channels.v1.Channels/AssignChannel");
+            let path = http::uri::PathAndQuery::from_static(
+                "/voice_channels.v1.Channels/AssignChannel",
+            );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "voice_channels.v1.Channels",
-                "AssignChannel",
-            ));
+            req.extensions_mut()
+                .insert(GrpcMethod::new("voice_channels.v1.Channels", "AssignChannel"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn unassign_channel(
             &mut self,
             request: impl tonic::IntoRequest<super::UnassignChannelRequest>,
-        ) -> std::result::Result<tonic::Response<super::UnassignChannelResponse>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {}", e.into()),
-                )
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::UnassignChannelResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/voice_channels.v1.Channels/UnassignChannel");
+            let path = http::uri::PathAndQuery::from_static(
+                "/voice_channels.v1.Channels/UnassignChannel",
+            );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "voice_channels.v1.Channels",
-                "UnassignChannel",
-            ));
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("voice_channels.v1.Channels", "UnassignChannel"),
+                );
             self.inner.unary(req, path, codec).await
         }
         pub async fn register_voice_server(
             &mut self,
             request: impl tonic::IntoRequest<super::RegisterVoiceServerRequest>,
-        ) -> std::result::Result<tonic::Response<super::RegisterVoiceServerResponse>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {}", e.into()),
-                )
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::RegisterVoiceServerResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/voice_channels.v1.Channels/RegisterVoiceServer",
             );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "voice_channels.v1.Channels",
-                "RegisterVoiceServer",
-            ));
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("voice_channels.v1.Channels", "RegisterVoiceServer"),
+                );
             self.inner.unary(req, path, codec).await
         }
         pub async fn cleanup_stale_voice_servers(
@@ -396,21 +439,27 @@ pub mod channels_client {
             tonic::Response<super::CleanupStaleVoiceServersResponse>,
             tonic::Status,
         > {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {}", e.into()),
-                )
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/voice_channels.v1.Channels/CleanupStaleVoiceServers",
             );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "voice_channels.v1.Channels",
-                "CleanupStaleVoiceServers",
-            ));
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "voice_channels.v1.Channels",
+                        "CleanupStaleVoiceServers",
+                    ),
+                );
             self.inner.unary(req, path, codec).await
         }
     }

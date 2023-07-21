@@ -113,8 +113,8 @@ pub mod user_status_response {
 /// Generated client implementations.
 pub mod voice_server_client {
     #![allow(unused_variables, dead_code, missing_docs, clippy::let_unit_value)]
-    use tonic::codegen::http::Uri;
     use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
     #[derive(Debug, Clone)]
     pub struct VoiceServerClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -158,8 +158,9 @@ pub mod voice_server_client {
                     <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<http::Request<tonic::body::BoxBody>>>::Error:
-                Into<StdError> + Send + Sync,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::BoxBody>,
+            >>::Error: Into<StdError> + Send + Sync,
         {
             VoiceServerClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -197,58 +198,74 @@ pub mod voice_server_client {
         pub async fn open_connection(
             &mut self,
             request: impl tonic::IntoRequest<super::OpenConnectionRequest>,
-        ) -> std::result::Result<tonic::Response<super::OpenConnectionResponse>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {}", e.into()),
-                )
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::OpenConnectionResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/voice_server.v1.VoiceServer/OpenConnection");
+            let path = http::uri::PathAndQuery::from_static(
+                "/voice_server.v1.VoiceServer/OpenConnection",
+            );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "voice_server.v1.VoiceServer",
-                "OpenConnection",
-            ));
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("voice_server.v1.VoiceServer", "OpenConnection"),
+                );
             self.inner.unary(req, path, codec).await
         }
         pub async fn establish_session(
             &mut self,
             request: impl tonic::IntoRequest<super::EstablishSessionRequest>,
-        ) -> std::result::Result<tonic::Response<super::EstablishSessionResponse>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {}", e.into()),
-                )
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::EstablishSessionResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/voice_server.v1.VoiceServer/EstablishSession",
             );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "voice_server.v1.VoiceServer",
-                "EstablishSession",
-            ));
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("voice_server.v1.VoiceServer", "EstablishSession"),
+                );
             self.inner.unary(req, path, codec).await
         }
         pub async fn leave(
             &mut self,
             request: impl tonic::IntoRequest<super::LeaveRequest>,
         ) -> std::result::Result<tonic::Response<super::LeaveResponse>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {}", e.into()),
-                )
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/voice_server.v1.VoiceServer/Leave");
+            let path = http::uri::PathAndQuery::from_static(
+                "/voice_server.v1.VoiceServer/Leave",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("voice_server.v1.VoiceServer", "Leave"));
@@ -257,17 +274,23 @@ pub mod voice_server_client {
         pub async fn user_status(
             &mut self,
             request: impl tonic::IntoRequest<super::UserStatusRequest>,
-        ) -> std::result::Result<tonic::Response<super::UserStatusResponse>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {}", e.into()),
-                )
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::UserStatusResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/voice_server.v1.VoiceServer/UserStatus");
+            let path = http::uri::PathAndQuery::from_static(
+                "/voice_server.v1.VoiceServer/UserStatus",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("voice_server.v1.VoiceServer", "UserStatus"));
@@ -277,14 +300,19 @@ pub mod voice_server_client {
             &mut self,
             request: impl tonic::IntoRequest<super::StatusRequest>,
         ) -> std::result::Result<tonic::Response<super::StatusResponse>, tonic::Status> {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {}", e.into()),
-                )
-            })?;
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/voice_server.v1.VoiceServer/Status");
+            let path = http::uri::PathAndQuery::from_static(
+                "/voice_server.v1.VoiceServer/Status",
+            );
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("voice_server.v1.VoiceServer", "Status"));
@@ -293,22 +321,26 @@ pub mod voice_server_client {
         pub async fn assign_channel(
             &mut self,
             request: impl tonic::IntoRequest<super::AssignChannelRequest>,
-        ) -> std::result::Result<tonic::Response<super::AssignChannelResponse>, tonic::Status>
-        {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::new(
-                    tonic::Code::Unknown,
-                    format!("Service was not ready: {}", e.into()),
-                )
-            })?;
+        ) -> std::result::Result<
+            tonic::Response<super::AssignChannelResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/voice_server.v1.VoiceServer/AssignChannel");
+            let path = http::uri::PathAndQuery::from_static(
+                "/voice_server.v1.VoiceServer/AssignChannel",
+            );
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new(
-                "voice_server.v1.VoiceServer",
-                "AssignChannel",
-            ));
+            req.extensions_mut()
+                .insert(GrpcMethod::new("voice_server.v1.VoiceServer", "AssignChannel"));
             self.inner.unary(req, path, codec).await
         }
     }
