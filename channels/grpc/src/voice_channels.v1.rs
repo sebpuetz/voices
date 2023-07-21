@@ -153,59 +153,35 @@ pub mod channels_server {
         async fn create_server(
             &self,
             request: tonic::Request<super::CreateServerRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::CreateServerResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<super::CreateServerResponse>, tonic::Status>;
         async fn get_server(
             &self,
             request: tonic::Request<super::GetServerRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetServerResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<super::GetServerResponse>, tonic::Status>;
         async fn get_servers(
             &self,
             request: tonic::Request<super::GetServersRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetServersResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<super::GetServersResponse>, tonic::Status>;
         async fn create_channel(
             &self,
             request: tonic::Request<super::CreateChannelRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::CreateChannelResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<super::CreateChannelResponse>, tonic::Status>;
         async fn get_channel(
             &self,
             request: tonic::Request<super::GetChannelRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::GetChannelResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<super::GetChannelResponse>, tonic::Status>;
         async fn assign_channel(
             &self,
             request: tonic::Request<super::AssignChannelRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::AssignChannelResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<super::AssignChannelResponse>, tonic::Status>;
         async fn unassign_channel(
             &self,
             request: tonic::Request<super::UnassignChannelRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::UnassignChannelResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<super::UnassignChannelResponse>, tonic::Status>;
         async fn register_voice_server(
             &self,
             request: tonic::Request<super::RegisterVoiceServerRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::RegisterVoiceServerResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<super::RegisterVoiceServerResponse>, tonic::Status>;
         async fn cleanup_stale_voice_servers(
             &self,
             request: tonic::Request<super::CleanupStaleVoiceServersRequest>,
@@ -237,10 +213,7 @@ pub mod channels_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -296,23 +269,15 @@ pub mod channels_server {
                 "/voice_channels.v1.Channels/CreateServer" => {
                     #[allow(non_camel_case_types)]
                     struct CreateServerSvc<T: Channels>(pub Arc<T>);
-                    impl<
-                        T: Channels,
-                    > tonic::server::UnaryService<super::CreateServerRequest>
-                    for CreateServerSvc<T> {
+                    impl<T: Channels> tonic::server::UnaryService<super::CreateServerRequest> for CreateServerSvc<T> {
                         type Response = super::CreateServerResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::CreateServerRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                (*inner).create_server(request).await
-                            };
+                            let fut = async move { (*inner).create_server(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -342,15 +307,9 @@ pub mod channels_server {
                 "/voice_channels.v1.Channels/GetServer" => {
                     #[allow(non_camel_case_types)]
                     struct GetServerSvc<T: Channels>(pub Arc<T>);
-                    impl<
-                        T: Channels,
-                    > tonic::server::UnaryService<super::GetServerRequest>
-                    for GetServerSvc<T> {
+                    impl<T: Channels> tonic::server::UnaryService<super::GetServerRequest> for GetServerSvc<T> {
                         type Response = super::GetServerResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::GetServerRequest>,
@@ -386,15 +345,9 @@ pub mod channels_server {
                 "/voice_channels.v1.Channels/GetServers" => {
                     #[allow(non_camel_case_types)]
                     struct GetServersSvc<T: Channels>(pub Arc<T>);
-                    impl<
-                        T: Channels,
-                    > tonic::server::UnaryService<super::GetServersRequest>
-                    for GetServersSvc<T> {
+                    impl<T: Channels> tonic::server::UnaryService<super::GetServersRequest> for GetServersSvc<T> {
                         type Response = super::GetServersResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::GetServersRequest>,
@@ -430,23 +383,15 @@ pub mod channels_server {
                 "/voice_channels.v1.Channels/CreateChannel" => {
                     #[allow(non_camel_case_types)]
                     struct CreateChannelSvc<T: Channels>(pub Arc<T>);
-                    impl<
-                        T: Channels,
-                    > tonic::server::UnaryService<super::CreateChannelRequest>
-                    for CreateChannelSvc<T> {
+                    impl<T: Channels> tonic::server::UnaryService<super::CreateChannelRequest> for CreateChannelSvc<T> {
                         type Response = super::CreateChannelResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::CreateChannelRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                (*inner).create_channel(request).await
-                            };
+                            let fut = async move { (*inner).create_channel(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -476,15 +421,9 @@ pub mod channels_server {
                 "/voice_channels.v1.Channels/GetChannel" => {
                     #[allow(non_camel_case_types)]
                     struct GetChannelSvc<T: Channels>(pub Arc<T>);
-                    impl<
-                        T: Channels,
-                    > tonic::server::UnaryService<super::GetChannelRequest>
-                    for GetChannelSvc<T> {
+                    impl<T: Channels> tonic::server::UnaryService<super::GetChannelRequest> for GetChannelSvc<T> {
                         type Response = super::GetChannelResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::GetChannelRequest>,
@@ -520,23 +459,15 @@ pub mod channels_server {
                 "/voice_channels.v1.Channels/AssignChannel" => {
                     #[allow(non_camel_case_types)]
                     struct AssignChannelSvc<T: Channels>(pub Arc<T>);
-                    impl<
-                        T: Channels,
-                    > tonic::server::UnaryService<super::AssignChannelRequest>
-                    for AssignChannelSvc<T> {
+                    impl<T: Channels> tonic::server::UnaryService<super::AssignChannelRequest> for AssignChannelSvc<T> {
                         type Response = super::AssignChannelResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::AssignChannelRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                (*inner).assign_channel(request).await
-                            };
+                            let fut = async move { (*inner).assign_channel(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -566,23 +497,17 @@ pub mod channels_server {
                 "/voice_channels.v1.Channels/UnassignChannel" => {
                     #[allow(non_camel_case_types)]
                     struct UnassignChannelSvc<T: Channels>(pub Arc<T>);
-                    impl<
-                        T: Channels,
-                    > tonic::server::UnaryService<super::UnassignChannelRequest>
-                    for UnassignChannelSvc<T> {
+                    impl<T: Channels> tonic::server::UnaryService<super::UnassignChannelRequest>
+                        for UnassignChannelSvc<T>
+                    {
                         type Response = super::UnassignChannelResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::UnassignChannelRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                (*inner).unassign_channel(request).await
-                            };
+                            let fut = async move { (*inner).unassign_channel(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -612,23 +537,17 @@ pub mod channels_server {
                 "/voice_channels.v1.Channels/RegisterVoiceServer" => {
                     #[allow(non_camel_case_types)]
                     struct RegisterVoiceServerSvc<T: Channels>(pub Arc<T>);
-                    impl<
-                        T: Channels,
-                    > tonic::server::UnaryService<super::RegisterVoiceServerRequest>
-                    for RegisterVoiceServerSvc<T> {
+                    impl<T: Channels> tonic::server::UnaryService<super::RegisterVoiceServerRequest>
+                        for RegisterVoiceServerSvc<T>
+                    {
                         type Response = super::RegisterVoiceServerResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::RegisterVoiceServerRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                (*inner).register_voice_server(request).await
-                            };
+                            let fut = async move { (*inner).register_voice_server(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -658,25 +577,19 @@ pub mod channels_server {
                 "/voice_channels.v1.Channels/CleanupStaleVoiceServers" => {
                     #[allow(non_camel_case_types)]
                     struct CleanupStaleVoiceServersSvc<T: Channels>(pub Arc<T>);
-                    impl<
-                        T: Channels,
-                    > tonic::server::UnaryService<super::CleanupStaleVoiceServersRequest>
-                    for CleanupStaleVoiceServersSvc<T> {
+                    impl<T: Channels>
+                        tonic::server::UnaryService<super::CleanupStaleVoiceServersRequest>
+                        for CleanupStaleVoiceServersSvc<T>
+                    {
                         type Response = super::CleanupStaleVoiceServersResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
-                            request: tonic::Request<
-                                super::CleanupStaleVoiceServersRequest,
-                            >,
+                            request: tonic::Request<super::CleanupStaleVoiceServersRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                (*inner).cleanup_stale_voice_servers(request).await
-                            };
+                            let fut =
+                                async move { (*inner).cleanup_stale_voice_servers(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -703,18 +616,14 @@ pub mod channels_server {
                     };
                     Box::pin(fut)
                 }
-                _ => {
-                    Box::pin(async move {
-                        Ok(
-                            http::Response::builder()
-                                .status(200)
-                                .header("grpc-status", "12")
-                                .header("content-type", "application/grpc")
-                                .body(empty_body())
-                                .unwrap(),
-                        )
-                    })
-                }
+                _ => Box::pin(async move {
+                    Ok(http::Response::builder()
+                        .status(200)
+                        .header("grpc-status", "12")
+                        .header("content-type", "application/grpc")
+                        .body(empty_body())
+                        .unwrap())
+                }),
             }
         }
     }

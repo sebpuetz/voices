@@ -120,17 +120,11 @@ pub mod voice_server_server {
         async fn open_connection(
             &self,
             request: tonic::Request<super::OpenConnectionRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::OpenConnectionResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<super::OpenConnectionResponse>, tonic::Status>;
         async fn establish_session(
             &self,
             request: tonic::Request<super::EstablishSessionRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::EstablishSessionResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<super::EstablishSessionResponse>, tonic::Status>;
         async fn leave(
             &self,
             request: tonic::Request<super::LeaveRequest>,
@@ -138,10 +132,7 @@ pub mod voice_server_server {
         async fn user_status(
             &self,
             request: tonic::Request<super::UserStatusRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::UserStatusResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<super::UserStatusResponse>, tonic::Status>;
         async fn status(
             &self,
             request: tonic::Request<super::StatusRequest>,
@@ -149,10 +140,7 @@ pub mod voice_server_server {
         async fn assign_channel(
             &self,
             request: tonic::Request<super::AssignChannelRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::AssignChannelResponse>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<super::AssignChannelResponse>, tonic::Status>;
     }
     #[derive(Debug)]
     pub struct VoiceServerServer<T: VoiceServer> {
@@ -177,10 +165,7 @@ pub mod voice_server_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -236,23 +221,17 @@ pub mod voice_server_server {
                 "/voice_server.v1.VoiceServer/OpenConnection" => {
                     #[allow(non_camel_case_types)]
                     struct OpenConnectionSvc<T: VoiceServer>(pub Arc<T>);
-                    impl<
-                        T: VoiceServer,
-                    > tonic::server::UnaryService<super::OpenConnectionRequest>
-                    for OpenConnectionSvc<T> {
+                    impl<T: VoiceServer> tonic::server::UnaryService<super::OpenConnectionRequest>
+                        for OpenConnectionSvc<T>
+                    {
                         type Response = super::OpenConnectionResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::OpenConnectionRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                (*inner).open_connection(request).await
-                            };
+                            let fut = async move { (*inner).open_connection(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -282,23 +261,17 @@ pub mod voice_server_server {
                 "/voice_server.v1.VoiceServer/EstablishSession" => {
                     #[allow(non_camel_case_types)]
                     struct EstablishSessionSvc<T: VoiceServer>(pub Arc<T>);
-                    impl<
-                        T: VoiceServer,
-                    > tonic::server::UnaryService<super::EstablishSessionRequest>
-                    for EstablishSessionSvc<T> {
+                    impl<T: VoiceServer> tonic::server::UnaryService<super::EstablishSessionRequest>
+                        for EstablishSessionSvc<T>
+                    {
                         type Response = super::EstablishSessionResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::EstablishSessionRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                (*inner).establish_session(request).await
-                            };
+                            let fut = async move { (*inner).establish_session(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -328,13 +301,9 @@ pub mod voice_server_server {
                 "/voice_server.v1.VoiceServer/Leave" => {
                     #[allow(non_camel_case_types)]
                     struct LeaveSvc<T: VoiceServer>(pub Arc<T>);
-                    impl<T: VoiceServer> tonic::server::UnaryService<super::LeaveRequest>
-                    for LeaveSvc<T> {
+                    impl<T: VoiceServer> tonic::server::UnaryService<super::LeaveRequest> for LeaveSvc<T> {
                         type Response = super::LeaveResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::LeaveRequest>,
@@ -370,15 +339,9 @@ pub mod voice_server_server {
                 "/voice_server.v1.VoiceServer/UserStatus" => {
                     #[allow(non_camel_case_types)]
                     struct UserStatusSvc<T: VoiceServer>(pub Arc<T>);
-                    impl<
-                        T: VoiceServer,
-                    > tonic::server::UnaryService<super::UserStatusRequest>
-                    for UserStatusSvc<T> {
+                    impl<T: VoiceServer> tonic::server::UnaryService<super::UserStatusRequest> for UserStatusSvc<T> {
                         type Response = super::UserStatusResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::UserStatusRequest>,
@@ -414,15 +377,9 @@ pub mod voice_server_server {
                 "/voice_server.v1.VoiceServer/Status" => {
                     #[allow(non_camel_case_types)]
                     struct StatusSvc<T: VoiceServer>(pub Arc<T>);
-                    impl<
-                        T: VoiceServer,
-                    > tonic::server::UnaryService<super::StatusRequest>
-                    for StatusSvc<T> {
+                    impl<T: VoiceServer> tonic::server::UnaryService<super::StatusRequest> for StatusSvc<T> {
                         type Response = super::StatusResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::StatusRequest>,
@@ -458,23 +415,17 @@ pub mod voice_server_server {
                 "/voice_server.v1.VoiceServer/AssignChannel" => {
                     #[allow(non_camel_case_types)]
                     struct AssignChannelSvc<T: VoiceServer>(pub Arc<T>);
-                    impl<
-                        T: VoiceServer,
-                    > tonic::server::UnaryService<super::AssignChannelRequest>
-                    for AssignChannelSvc<T> {
+                    impl<T: VoiceServer> tonic::server::UnaryService<super::AssignChannelRequest>
+                        for AssignChannelSvc<T>
+                    {
                         type Response = super::AssignChannelResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
                         fn call(
                             &mut self,
                             request: tonic::Request<super::AssignChannelRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                (*inner).assign_channel(request).await
-                            };
+                            let fut = async move { (*inner).assign_channel(request).await };
                             Box::pin(fut)
                         }
                     }
@@ -501,18 +452,14 @@ pub mod voice_server_server {
                     };
                     Box::pin(fut)
                 }
-                _ => {
-                    Box::pin(async move {
-                        Ok(
-                            http::Response::builder()
-                                .status(200)
-                                .header("grpc-status", "12")
-                                .header("content-type", "application/grpc")
-                                .body(empty_body())
-                                .unwrap(),
-                        )
-                    })
-                }
+                _ => Box::pin(async move {
+                    Ok(http::Response::builder()
+                        .status(200)
+                        .header("grpc-status", "12")
+                        .header("content-type", "application/grpc")
+                        .body(empty_body())
+                        .unwrap())
+                }),
             }
         }
     }
