@@ -55,6 +55,7 @@ pub fn init(service_name: &str, otlp_uri: Option<String>) -> anyhow::Result<()> 
     )?;
     Ok(())
 }
+
 pub fn add(left: usize, right: usize) -> usize {
     left + right
 }

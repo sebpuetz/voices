@@ -44,6 +44,9 @@ services:
     command: "distributed"
     deploy:
       replicas: 3
+    extra_hosts:
+        - "host.docker.internal:host-gateway"
+
 
   voice-server-1:
     image: voices/server

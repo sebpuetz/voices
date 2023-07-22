@@ -17,7 +17,7 @@ datasources:
   type: tempo
   access: proxy
   orgId: 1
-  url: http://tempo:3200
+  url: http://host.docker.internal:3200
   basicAuth: false
   isDefault: true
   version: 1

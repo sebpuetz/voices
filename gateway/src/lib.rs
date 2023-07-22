@@ -28,6 +28,8 @@ mod standalone {
 #[cfg(feature = "standalone")]
 use standalone::*;
 use tokio::net::TcpListener;
+use tracing::Instrument;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::channel_registry::GetVoiceHost;
 use crate::server::channels::Channels;
@@ -115,7 +117,14 @@ where
                 .allow_methods([Method::GET, Method::POST]),
         )
         .with_state(AppState { channels });
-    let srv = axum::Server::from_tcp(ctl_listener.into_std()?)?.serve(router.into_make_service());
+    let mut cfg = server_framework::Config::default();
+    // cfg.bind_address = SocketAddr::from(([0, 0, 0, 0], config.http_listen_port));
+    cfg.metrics_health_port = 9000;
+    let srv = server_framework::Server::new(cfg)
+        .always_live_and_ready()
+        .with(router)
+        .serve_with_listener(ctl_listener);
+    // let srv = axum::Server::from_tcp(ctl_listener.into_std()?)?.serve(router.into_make_service());
     srv.await?;
     Ok(())
 }
@@ -133,12 +142,19 @@ where
     R: GetVoiceHost,
     S: ChannelState,
 {
-    ws.on_upgrade(|socket| async move {
-        if let Err(e) = handle_session(socket, state.channels).await {
-            tracing::warn!("session ended with error: {}", e);
-        } else {
-            tracing::info!("session ended");
+    let span = tracing::Span::current();
+    let ctx = span.context();
+    let ws_span = tracing::info_span!(parent: None, "websocket");
+    ws_span.set_parent(ctx);
+    ws.on_upgrade(move |socket| {
+        async move {
+            if let Err(e) = handle_session(socket, state.channels).await {
+                tracing::warn!("session ended with error: {}", e);
+            } else {
+                tracing::info!("session ended");
+            }
         }
+        .instrument(ws_span)
     })
 }
 
