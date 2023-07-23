@@ -1,5 +1,5 @@
 # Adapted from https://github.com/LukeMathWalker/zero-to-production/blob/main/Dockerfile
-FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-1.71 AS chef
 
 FROM chef AS planner
 WORKDIR /app
