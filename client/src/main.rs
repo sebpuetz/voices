@@ -32,9 +32,13 @@ fn main() -> anyhow::Result<()> {
     let config = Config::parse();
     let client = channels_api::Client::new(config.gateway_url.parse()?)?;
     let servers = client.get_servers()?.info;
-    let Some(srv) = read_choice(servers) else {return Ok(())};
+    let Some(srv) = read_choice(servers) else {
+        return Ok(());
+    };
     let server = client.get_server(srv.server_id)?;
-    let Some(chan) = read_choice(server.channels) else {return Ok(())};
+    let Some(chan) = read_choice(server.channels) else {
+        return Ok(());
+    };
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;

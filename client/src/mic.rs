@@ -96,11 +96,11 @@ impl Input {
         let resampler = if sample_rate != 48000 {
             tracing::info!(input_sample_rate = sample_rate, "initializing resampler");
             let inner = FftFixedInOut::new(sample_rate as usize, 48_000, 960, 2)?;
-            let mut buf_in = inner.input_buffer_allocate();
+            let mut buf_in = inner.input_buffer_allocate(false);
             buf_in
                 .iter_mut()
                 .for_each(|c| c.resize((sample_rate / 50) as usize, 0f32));
-            let buf_out = inner.output_buffer_allocate();
+            let buf_out = inner.output_buffer_allocate(false);
             Some(Resampler {
                 inner,
                 buf_in,
