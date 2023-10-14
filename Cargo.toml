@@ -6,6 +6,7 @@ members = [
   "./ws-proto",
   "./udp-proto",
   "./voice/*",
+  "./tracing",
 ]
 
 exclude = [
