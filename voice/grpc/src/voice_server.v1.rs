@@ -231,7 +231,9 @@ pub mod voice_server_server {
                             request: tonic::Request<super::OpenConnectionRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).open_connection(request).await };
+                            let fut = async move {
+                                <T as VoiceServer>::open_connection(&inner, request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -271,7 +273,9 @@ pub mod voice_server_server {
                             request: tonic::Request<super::EstablishSessionRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).establish_session(request).await };
+                            let fut = async move {
+                                <T as VoiceServer>::establish_session(&inner, request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -309,7 +313,8 @@ pub mod voice_server_server {
                             request: tonic::Request<super::LeaveRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).leave(request).await };
+                            let fut =
+                                async move { <T as VoiceServer>::leave(&inner, request).await };
                             Box::pin(fut)
                         }
                     }
@@ -347,7 +352,9 @@ pub mod voice_server_server {
                             request: tonic::Request<super::UserStatusRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).user_status(request).await };
+                            let fut = async move {
+                                <T as VoiceServer>::user_status(&inner, request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -385,7 +392,8 @@ pub mod voice_server_server {
                             request: tonic::Request<super::StatusRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).status(request).await };
+                            let fut =
+                                async move { <T as VoiceServer>::status(&inner, request).await };
                             Box::pin(fut)
                         }
                     }
@@ -425,7 +433,9 @@ pub mod voice_server_server {
                             request: tonic::Request<super::AssignChannelRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).assign_channel(request).await };
+                            let fut = async move {
+                                <T as VoiceServer>::assign_channel(&inner, request).await
+                            };
                             Box::pin(fut)
                         }
                     }

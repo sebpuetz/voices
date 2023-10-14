@@ -20,9 +20,7 @@ fn main() -> anyhow::Result<()> {
             ),
     )?;
     LogTracer::init()?;
-    let matches = Config::into_app()
-        .dont_collapse_args_in_usage(true)
-        .get_matches();
+    let matches = Config::command().get_matches();
     let config = Config::from_arg_matches(&matches)?;
     rt.block_on(async move { run(config).await }).map_err(|e| {
         tracing::error!("{}", e);

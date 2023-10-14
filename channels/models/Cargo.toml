@@ -6,5 +6,5 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-chrono = { version = "0.4.22" }
-uuid = { version = "1.1.2", features = ["v4"] }
+chrono = { version = "0.4.31" }
+uuid = { version = "1.4.1", features = ["v4"] }
