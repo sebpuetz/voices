@@ -7,18 +7,18 @@ edition = "2021"
 
 [dependencies]
 secstr = { version = "0.5.1", features = ["serde"] }
-serde = { version = "1.0.144", features = ["derive"] }
-serde_json = "1.0.83"
-strum = { version = "0.24.1", features = ["derive"] }
-uuid = { version = "1.1.2", features = ["serde"] }
+serde = { version = "1.0.189", features = ["derive"] }
+serde_json = "1.0.107"
+strum = { version = "0.25.0", features = ["derive"] }
+uuid = { version = "1.4.1", features = ["serde"] }
 
 # client side deps
-futures-util = { version = "0.3.26", optional = true }
-thiserror = { version = "1.0.38", optional = true }
-tokio = { version = "1.16.1", features = ["net", "sync"], optional = true }
-tokio-tungstenite = { version = "0.19.0", optional = true }
-tracing = { version = "0.1.37", optional = true }
-tungstenite = { version = "0.19.0", features = ["rustls"], optional = true }
+futures-util = { version = "0.3.28", optional = true }
+thiserror = { version = "1.0.49", optional = true }
+tokio = { version = "1.33.0", features = ["net", "sync"], optional = true }
+tokio-tungstenite = { version = "0.20.1", optional = true }
+tracing = { version = "0.1.39", optional = true }
+tungstenite = { version = "0.20.1", features = ["rustls"], optional = true }
 
 [features]
 default = []

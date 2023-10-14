@@ -277,7 +277,9 @@ pub mod channels_server {
                             request: tonic::Request<super::CreateServerRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).create_server(request).await };
+                            let fut = async move {
+                                <T as Channels>::create_server(&inner, request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -315,7 +317,8 @@ pub mod channels_server {
                             request: tonic::Request<super::GetServerRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).get_server(request).await };
+                            let fut =
+                                async move { <T as Channels>::get_server(&inner, request).await };
                             Box::pin(fut)
                         }
                     }
@@ -353,7 +356,8 @@ pub mod channels_server {
                             request: tonic::Request<super::GetServersRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).get_servers(request).await };
+                            let fut =
+                                async move { <T as Channels>::get_servers(&inner, request).await };
                             Box::pin(fut)
                         }
                     }
@@ -391,7 +395,9 @@ pub mod channels_server {
                             request: tonic::Request<super::CreateChannelRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).create_channel(request).await };
+                            let fut = async move {
+                                <T as Channels>::create_channel(&inner, request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -429,7 +435,8 @@ pub mod channels_server {
                             request: tonic::Request<super::GetChannelRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).get_channel(request).await };
+                            let fut =
+                                async move { <T as Channels>::get_channel(&inner, request).await };
                             Box::pin(fut)
                         }
                     }
@@ -467,7 +474,9 @@ pub mod channels_server {
                             request: tonic::Request<super::AssignChannelRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).assign_channel(request).await };
+                            let fut = async move {
+                                <T as Channels>::assign_channel(&inner, request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -507,7 +516,9 @@ pub mod channels_server {
                             request: tonic::Request<super::UnassignChannelRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).unassign_channel(request).await };
+                            let fut = async move {
+                                <T as Channels>::unassign_channel(&inner, request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -547,7 +558,9 @@ pub mod channels_server {
                             request: tonic::Request<super::RegisterVoiceServerRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut = async move { (*inner).register_voice_server(request).await };
+                            let fut = async move {
+                                <T as Channels>::register_voice_server(&inner, request).await
+                            };
                             Box::pin(fut)
                         }
                     }
@@ -588,8 +601,9 @@ pub mod channels_server {
                             request: tonic::Request<super::CleanupStaleVoiceServersRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
-                            let fut =
-                                async move { (*inner).cleanup_stale_voice_servers(request).await };
+                            let fut = async move {
+                                <T as Channels>::cleanup_stale_voice_servers(&inner, request).await
+                            };
                             Box::pin(fut)
                         }
                     }
