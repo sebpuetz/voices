@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-  "./channels/*",
-  "./gateway",
-  "./ws-proto",
-  "./udp-proto",
-  "./voice/*",
+  "./server/channels/*",
+  "./server/gateway",
+  "./server/ws-proto",
+  "./server/udp-proto",
+  "./server/voice/*",
 ]
 
 exclude = [
